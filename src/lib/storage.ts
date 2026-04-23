@@ -2,7 +2,9 @@ const STORAGE_KEYS = {
   minecraftDir: "mecha-launcher.minecraftDir",
   selectedVersionId: "mecha-launcher.selectedVersionId",
   favorites: "mecha-launcher.versionFavorites",
-  popularity: "mecha-launcher.versionPopularity"
+  popularity: "mecha-launcher.versionPopularity",
+  offlineUsername: "mecha-launcher.offlineUsername",
+  offlineSkinDataUrl: "mecha-launcher.offlineSkinDataUrl"
 } as const;
 
 function readString(key: string): string | null {
@@ -76,4 +78,24 @@ export function incrementPopularity(key: VersionCatalogKey, by = 1): void {
   const next = loadPopularity();
   next[key] = Math.max(0, (next[key] ?? 0) + by);
   writeJson(STORAGE_KEYS.popularity, next);
+}
+
+export function loadOfflineUsername(): string | null {
+  return readString(STORAGE_KEYS.offlineUsername);
+}
+
+export function storeOfflineUsername(username: string): void {
+  localStorage.setItem(STORAGE_KEYS.offlineUsername, username);
+}
+
+export function loadOfflineSkinDataUrl(): string | null {
+  return readString(STORAGE_KEYS.offlineSkinDataUrl);
+}
+
+export function storeOfflineSkinDataUrl(dataUrl: string | null): void {
+  if (!dataUrl) {
+    localStorage.removeItem(STORAGE_KEYS.offlineSkinDataUrl);
+    return;
+  }
+  localStorage.setItem(STORAGE_KEYS.offlineSkinDataUrl, dataUrl);
 }

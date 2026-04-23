@@ -1,8 +1,8 @@
 [package]
 name = "mecha-launcher"
 version = "0.1.0"
-description = "Minimal offline Minecraft launcher"
-authors = ["OpenAI Codex"]
+description = "Minimal Minecraft launcher"
+authors = ["Alex Romero"]
 license = "MIT"
 edition = "2021"
 

@@ -20,6 +20,7 @@ use crate::{
     state::LaunchTracker,
 };
 
+
 struct TauriEventSink {
     app_handle: AppHandle,
 }

@@ -32,9 +32,14 @@
     loadPopularity,
     storeMinecraftDir,
     storeSelectedVersionId,
+    loadOfflineSkinDataUrl,
+    loadOfflineUsername,
+    storeOfflineSkinDataUrl,
+    storeOfflineUsername,
     toggleFavoriteKey
   } from "./lib/storage";
   import CatScene from "./lib/CatScene.svelte";
+  import PlayerScene from "./lib/PlayerScene.svelte";
   import {
     applyDocumentLang,
     fillTemplate,
@@ -54,7 +59,7 @@
     VanillaRelease
   } from "./lib/types";
 
-  const FIXED_USERNAME = "Player";
+  const DEFAULT_OFFLINE_USERNAME = "Player";
   const THEME_STORAGE_KEY = "mecha-launcher.themeMode";
   const MAX_LOG_LINES = 250;
 
@@ -74,6 +79,9 @@
   let optifineOptions: OptifineInstallOption[] = [];
   let vanillaReleases: VanillaRelease[] = [];
   let selectedVersionId = "";
+  let offlineUsername = loadOfflineUsername() ?? DEFAULT_OFFLINE_USERNAME;
+  let offlineSkinUrl = loadOfflineSkinDataUrl();
+  let slimArms = false;
   let errorMessage = "";
   let statusMessage = translate(locale, "statusWaitingDir");
   let isLoadingVersions = false;
@@ -264,6 +272,31 @@
 
     detectedMinecraftDir = detectedDir ?? "";
     minecraftDir = storedDir ?? detectedMinecraftDir;
+  }
+
+  function handleUsernameChange(username: string): void {
+    offlineUsername = username;
+    storeOfflineUsername(username);
+  }
+
+  async function handleLocalSkinFile(file: File | null): Promise<void> {
+    if (!file) {
+      return;
+    }
+    if (file.type !== "image/png") {
+      errorMessage = "La skin debe ser un PNG.";
+      await appendLog("system", errorMessage);
+      return;
+    }
+
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result ?? ""));
+      reader.onerror = () => reject(new Error("No se pudo leer el archivo."));
+      reader.readAsDataURL(file);
+    });
+    offlineSkinUrl = dataUrl;
+    storeOfflineSkinDataUrl(dataUrl);
   }
 
   async function refreshDependencies(): Promise<void> {
@@ -513,7 +546,7 @@
       const response = await launchVersion({
         minecraftDir: minecraftDir.trim(),
         versionId: selectedVersionId,
-        username: FIXED_USERNAME
+        username: offlineUsername.trim() || DEFAULT_OFFLINE_USERNAME
       });
 
       activeLaunchId = response.launchId;
@@ -948,6 +981,9 @@
         }
         await refreshDependencies();
         await hydrateMinecraftDir();
+        // Sync offline profile from storage in case it changed.
+        offlineUsername = loadOfflineUsername() ?? DEFAULT_OFFLINE_USERNAME;
+        offlineSkinUrl = loadOfflineSkinDataUrl();
         if (minecraftDir) {
           await refreshVersions();
         }
@@ -1097,7 +1133,7 @@
           </div>
           <div class="stage-badge">
             <svg class="app-icon" aria-hidden="true"><use href="#icon-user" /></svg>
-            <span>{FIXED_USERNAME}</span>
+            <span>{offlineUsername || DEFAULT_OFFLINE_USERNAME}</span>
           </div>
         </div>
 
@@ -1129,6 +1165,14 @@
               <span class="sr-only">{t("panePreviewSr")}</span>
             </div>
             <CatScene {themeMode} sceneAriaLabel={t("catSceneAria")} />
+          </section>
+
+          <section class="stage-pane" aria-label="Player preview">
+            <div class="pane-title pane-title-icon" title="Skin">
+              <svg class="app-icon" aria-hidden="true"><use href="#icon-cube" /></svg>
+              <span class="sr-only">Skin</span>
+            </div>
+            <PlayerScene skinUrl={offlineSkinUrl} {slimArms} sceneAriaLabel="Skin preview 3D" />
           </section>
 
           <section class="stage-pane log-pane" aria-label={t("paneOutputSr")}>
@@ -1253,6 +1297,45 @@
           {/if}
         </section>
       {/if}
+
+      <section class="panel-section">
+        <div class="section-title accent">
+          <svg class="app-icon" aria-hidden="true"><use href="#icon-user" /></svg>
+          Usuario (offline)
+        </div>
+
+        <input
+          class="text-input"
+          type="text"
+          value={offlineUsername}
+          on:input={(event) => handleUsernameChange((event.currentTarget as HTMLInputElement).value)}
+          placeholder="Nombre de usuario"
+          aria-label="Nombre de usuario"
+          style="margin-top: 10px;"
+        />
+
+        <div style="margin-top: 10px;">
+          <div class="hint">Skin (preview en el launcher)</div>
+          <input
+            class="text-input"
+            type="file"
+            accept="image/png"
+            on:change={(event) =>
+              void handleLocalSkinFile((event.currentTarget as HTMLInputElement).files?.[0] ?? null)}
+            aria-label="Elegir skin PNG"
+          />
+          <label class="help-text" style="display:flex; gap:10px; align-items:center; margin-top: 6px;">
+            <input
+              type="checkbox"
+              checked={slimArms}
+              on:change={(event) => {
+                slimArms = (event.currentTarget as HTMLInputElement).checked;
+              }}
+            />
+            <span>Modelo Alex (brazos finos)</span>
+          </label>
+        </div>
+      </section>
 
       <section class="panel-section">
         <div class="section-title accent">
