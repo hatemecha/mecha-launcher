@@ -1,0 +1,25 @@
+{
+  "name": "mecha-launcher",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --configLoader runner",
+    "build": "tsc && vite build --configLoader runner",
+    "preview": "vite preview --configLoader runner",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.9.0"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^5.0.0",
+    "@tauri-apps/cli": "2.9.3",
+    "@tsconfig/svelte": "^5.0.4",
+    "svelte": "^5.0.0",
+    "typescript": "5.9.3",
+    "vite": "6.4.1"
+  }
+}
