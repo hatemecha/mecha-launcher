@@ -3,6 +3,7 @@ use std::{
     fs,
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
+    sync::{Mutex, OnceLock},
     sync::Arc,
     thread,
     time::{Duration, Instant},
@@ -28,9 +29,11 @@ const LIBRARIES_BASE_URL: &str = "https://libraries.minecraft.net/";
 const ASSETS_BASE_URL: &str = "https://resources.download.minecraft.net/";
 const OPTIFINE_ADLOAD_BASE_URL: &str = "https://optifine.net/adloadx";
 const OPTIFINE_BASE_URL: &str = "https://optifine.net/";
+const OPTIFINE_DOWNLOADS_URL: &str = "https://optifine.net/downloads";
 const OPTIFINE_INSTALLER_TIMEOUT: Duration = Duration::from_secs(300);
 const OPTIFINE_INSTALLER_ERROR_TAIL_LINES: usize = 80;
 const OPTIFINE_INSTALLER_ERROR_MAX_CHARS: usize = 12_000;
+const OPTIFINE_OPTIONS_TTL: Duration = Duration::from_secs(10 * 60);
 const INSTALLER_RUNNER_SOURCE: &str = r#"import java.io.File;
 import java.lang.reflect.Method;
 
@@ -80,46 +83,13 @@ pub struct OptifineInstallResult {
 
 type ProgressSink = Arc<dyn Fn(OptifineInstallStatusEvent) + Send + Sync>;
 
-#[derive(Debug, Clone, Copy)]
-struct OptifineInstallOptionSpec {
-    id: &'static str,
-    minecraft_version: &'static str,
-    edition: &'static str,
-    file_name: &'static str,
-    release_kind: &'static str,
-    recommended_java_major: u32,
-    summary: &'static str,
+#[derive(Debug, Clone)]
+struct OptifineOptionsCache {
+    fetched_at: Instant,
+    options: Vec<OptifineInstallOption>,
 }
 
-const OPTIFINE_OPTIONS: [OptifineInstallOptionSpec; 3] = [
-    OptifineInstallOptionSpec {
-        id: "optifine-1-8-9",
-        minecraft_version: "1.8.9",
-        edition: "HD_U_M5",
-        file_name: "OptiFine_1.8.9_HD_U_M5.jar",
-        release_kind: "Estable",
-        recommended_java_major: 8,
-        summary: "PvP clasico, estable y liviano.",
-    },
-    OptifineInstallOptionSpec {
-        id: "optifine-1-16-5",
-        minecraft_version: "1.16.5",
-        edition: "HD_U_G8",
-        file_name: "OptiFine_1.16.5_HD_U_G8.jar",
-        release_kind: "Estable",
-        recommended_java_major: 8,
-        summary: "Nether Update con soporte amplio de shaders.",
-    },
-    OptifineInstallOptionSpec {
-        id: "optifine-latest",
-        minecraft_version: "1.21.11",
-        edition: "HD_U_J9",
-        file_name: "OptiFine_1.21.11_HD_U_J9.jar",
-        release_kind: "Ultima con OptiFine",
-        recommended_java_major: 21,
-        summary: "La version mas nueva publicada por OptiFine.",
-    },
-];
+static OPTIFINE_OPTIONS_CACHE: OnceLock<Mutex<Option<OptifineOptionsCache>>> = OnceLock::new();
 
 #[derive(Debug, Deserialize)]
 struct VersionManifest {
@@ -272,35 +242,102 @@ enum DownloadOutcome {
     Reused,
 }
 
-impl OptifineInstallOptionSpec {
-    fn option(self) -> OptifineInstallOption {
-        let optifine_version = format!("OptiFine_{}_{}", self.minecraft_version, self.edition);
+fn recommended_java_for_minecraft(version: &str) -> u32 {
+    // Rough mapping (UI hint):
+    // - <= 1.16.x: Java 8
+    // - 1.17.x: Java 16
+    // - 1.18.x - 1.20.x: Java 17
+    // - >= 1.21.x: Java 21
+    let parts = version
+        .split('.')
+        .filter_map(|part| part.parse::<u32>().ok())
+        .collect::<Vec<_>>();
+    let minor = parts.get(1).copied().unwrap_or(0);
+    if minor >= 21 {
+        return 21;
+    }
+    if minor >= 18 {
+        return 17;
+    }
+    if minor >= 17 {
+        return 16;
+    }
+    8
+}
 
-        OptifineInstallOption {
-            id: self.id.to_string(),
-            minecraft_version: self.minecraft_version.to_string(),
-            optifine_version,
-            edition: self.edition.to_string(),
-            file_name: self.file_name.to_string(),
-            version_id: self.version_id(),
-            title: format!("Minecraft {}", self.minecraft_version),
-            summary: self.summary.to_string(),
-            release_kind: self.release_kind.to_string(),
-            recommended_java_major: self.recommended_java_major,
-            source_url: format!("{OPTIFINE_ADLOAD_BASE_URL}?f={}", self.file_name),
+fn parse_optifine_downloads_html(html: &str) -> Vec<OptifineInstallOption> {
+    let pattern =
+        Regex::new(r#"OptiFine_(?P<mc>\d+\.\d+(?:\.\d+)?)_(?P<edition>HD_U_[A-Za-z0-9]+)\.jar"#)
+            .expect("valid regex");
+
+    let mut by_mc: HashMap<String, OptifineInstallOption> = HashMap::new();
+
+    for caps in pattern.captures_iter(html) {
+        let Some(mc) = caps.name("mc").map(|value| value.as_str().to_string()) else {
+            continue;
+        };
+        if by_mc.contains_key(&mc) {
+            continue;
+        }
+        let Some(edition) = caps.name("edition").map(|value| value.as_str().to_string()) else {
+            continue;
+        };
+        let file_name = format!("OptiFine_{mc}_{edition}.jar");
+
+        by_mc.insert(
+            mc.clone(),
+            OptifineInstallOption {
+                id: file_name.clone(),
+                minecraft_version: mc.clone(),
+                optifine_version: format!("OptiFine_{mc}_{edition}"),
+                edition: edition.clone(),
+                file_name: file_name.clone(),
+                version_id: format!("{mc}-OptiFine_{edition}"),
+                title: format!("Minecraft {mc}"),
+                summary: format!("Última build de OptiFine para Minecraft {mc}."),
+                release_kind: "Última".to_string(),
+                recommended_java_major: recommended_java_for_minecraft(&mc),
+                source_url: format!("{OPTIFINE_ADLOAD_BASE_URL}?f={file_name}"),
+            },
+        );
+    }
+
+    let mut options = by_mc.into_values().collect::<Vec<_>>();
+    options.sort_by(|a, b| b.minecraft_version.cmp(&a.minecraft_version));
+    options
+}
+
+async fn fetch_optifine_install_options() -> LauncherResult<Vec<OptifineInstallOption>> {
+    let client = Client::builder()
+        .user_agent("mecha-launcher/0.1")
+        .build()
+        .map_err(|error| LauncherError::new(format!("Failed to create HTTP client: {error}")))?;
+
+    let html = fetch_text(&client, OPTIFINE_DOWNLOADS_URL).await?;
+    Ok(parse_optifine_downloads_html(&html))
+}
+
+pub async fn list_optifine_install_options() -> LauncherResult<Vec<OptifineInstallOption>> {
+    let cache_lock = OPTIFINE_OPTIONS_CACHE.get_or_init(|| Mutex::new(None));
+
+    if let Ok(cache_guard) = cache_lock.lock() {
+        if let Some(cache) = cache_guard.as_ref() {
+            if cache.fetched_at.elapsed() <= OPTIFINE_OPTIONS_TTL && !cache.options.is_empty() {
+                return Ok(cache.options.clone());
+            }
         }
     }
 
-    fn version_id(self) -> String {
-        format!("{}-OptiFine_{}", self.minecraft_version, self.edition)
-    }
-}
+    let options = fetch_optifine_install_options().await?;
 
-pub fn optifine_install_options() -> Vec<OptifineInstallOption> {
-    OPTIFINE_OPTIONS
-        .into_iter()
-        .map(OptifineInstallOptionSpec::option)
-        .collect()
+    if let Ok(mut cache_guard) = cache_lock.lock() {
+        *cache_guard = Some(OptifineOptionsCache {
+            fetched_at: Instant::now(),
+            options: options.clone(),
+        });
+    }
+
+    Ok(options)
 }
 
 pub async fn list_vanilla_releases() -> LauncherResult<Vec<VanillaRelease>> {
@@ -443,7 +480,11 @@ pub async fn install_optifine_version(
     option_id: &str,
     progress: ProgressSink,
 ) -> LauncherResult<OptifineInstallResult> {
-    let option = find_option(option_id)?;
+    let option = list_optifine_install_options()
+        .await?
+        .into_iter()
+        .find(|option| option.id == option_id)
+        .ok_or_else(|| LauncherError::new(format!("Unknown OptiFine install option: {option_id}")))?;
     let client = Client::builder()
         .user_agent("mecha-launcher/0.1")
         .build()
@@ -451,14 +492,14 @@ pub async fn install_optifine_version(
 
     emit(
         &progress,
-        option.id,
+        &option.id,
         "prepare",
         "Preparando carpetas de Minecraft.",
         None,
         None,
     );
     ensure_minecraft_layout(minecraft_dir)?;
-    cleanup_optifine_version_dir(minecraft_dir, option)?;
+    cleanup_optifine_version_dir(minecraft_dir, &option)?;
 
     let version_manifest = fetch_json::<VersionManifest>(&client, VERSION_MANIFEST_URL).await?;
     let version_entry = version_manifest
@@ -474,7 +515,7 @@ pub async fn install_optifine_version(
 
     emit(
         &progress,
-        option.id,
+        &option.id,
         "minecraft",
         &format!("Descargando manifiesto de Minecraft {}.", option.minecraft_version),
         None,
@@ -486,57 +527,50 @@ pub async fn install_optifine_version(
     install_base_manifest_and_client(
         &client,
         minecraft_dir,
-        option.id,
+        &option.id,
         &base_manifest,
         &base_manifest_text,
         &progress,
     )
     .await?;
-    install_libraries(&client, minecraft_dir, option.id, &base_manifest, &progress).await?;
-    install_assets(&client, minecraft_dir, option.id, &base_manifest, &progress).await?;
+    install_libraries(&client, minecraft_dir, &option.id, &base_manifest, &progress).await?;
+    install_assets(&client, minecraft_dir, &option.id, &base_manifest, &progress).await?;
 
     if let Some(java_version) = base_manifest.java_version.as_ref() {
-        install_java_runtime(&client, minecraft_dir, option.id, java_version, &progress).await?;
+        install_java_runtime(&client, minecraft_dir, &option.id, java_version, &progress).await?;
     }
 
-    let optifine_jar = download_optifine_installer(&client, minecraft_dir, option, &progress).await?;
+    let optifine_jar = download_optifine_installer(&client, minecraft_dir, &option, &progress).await?;
     ensure_launcher_profiles_json(minecraft_dir)?;
-    if let Err(error) = run_optifine_installer(minecraft_dir, option, &optifine_jar, &progress).await
+    if let Err(error) = run_optifine_installer(minecraft_dir, &option, &optifine_jar, &progress).await
     {
-        let _ = cleanup_optifine_version_dir(minecraft_dir, option);
+        let _ = cleanup_optifine_version_dir(minecraft_dir, &option);
         return Err(error);
     }
     emit(
         &progress,
-        option.id,
+        &option.id,
         "optifine",
         "OptiFine aplicado. Verificando archivos.",
         Some(1),
         Some(1),
     );
-    verify_optifine_install(minecraft_dir, option)?;
+    verify_optifine_install(minecraft_dir, &option)?;
 
     emit(
         &progress,
-        option.id,
+        &option.id,
         "done",
-        &format!("{} quedo listo para jugar.", option.version_id()),
+        &format!("{} quedo listo para jugar.", option.version_id),
         Some(1),
         Some(1),
     );
 
     Ok(OptifineInstallResult {
-        version_id: option.version_id(),
+        version_id: option.version_id.clone(),
         minecraft_version: option.minecraft_version.to_string(),
-        optifine_version: format!("OptiFine_{}_{}", option.minecraft_version, option.edition),
+        optifine_version: option.optifine_version.clone(),
     })
-}
-
-fn find_option(option_id: &str) -> LauncherResult<OptifineInstallOptionSpec> {
-    OPTIFINE_OPTIONS
-        .into_iter()
-        .find(|option| option.id == option_id)
-        .ok_or_else(|| LauncherError::new(format!("Unknown OptiFine install option: {option_id}")))
 }
 
 fn emit(
@@ -865,12 +899,12 @@ async fn install_java_runtime(
 async fn download_optifine_installer(
     client: &Client,
     minecraft_dir: &Path,
-    option: OptifineInstallOptionSpec,
+    option: &OptifineInstallOption,
     progress: &ProgressSink,
 ) -> LauncherResult<PathBuf> {
     emit(
         progress,
-        option.id,
+        &option.id,
         "optifine",
         &format!("Buscando descarga oficial de {}.", option.file_name),
         None,
@@ -879,15 +913,15 @@ async fn download_optifine_installer(
 
     let adload_url = format!("{OPTIFINE_ADLOAD_BASE_URL}?f={}", option.file_name);
     let html = fetch_text(client, &adload_url).await?;
-    let download_path = extract_optifine_download_path(&html, option.file_name)?;
+    let download_path = extract_optifine_download_path(&html, &option.file_name)?;
     let download_url = format!("{OPTIFINE_BASE_URL}{download_path}");
     let installer_dir = minecraft_dir.join("versions").join("_mecha-cache").join("optifine");
     fs::create_dir_all(&installer_dir)?;
-    let installer_path = installer_dir.join(option.file_name);
+    let installer_path = installer_dir.join(&option.file_name);
 
     emit(
         progress,
-        option.id,
+        &option.id,
         "optifine",
         &format!("Descargando {}.", option.file_name),
         Some(0),
@@ -906,7 +940,7 @@ async fn download_optifine_installer(
 
     emit(
         progress,
-        option.id,
+        &option.id,
         "optifine",
         "Instalador OptiFine descargado.",
         Some(1),
@@ -918,13 +952,13 @@ async fn download_optifine_installer(
 
 async fn run_optifine_installer(
     minecraft_dir: &Path,
-    option: OptifineInstallOptionSpec,
+    option: &OptifineInstallOption,
     optifine_jar: &Path,
     progress: &ProgressSink,
 ) -> LauncherResult<()> {
     emit(
         progress,
-        option.id,
+        &option.id,
         "optifine",
         "Aplicando instalador OptiFine.",
         None,
@@ -1091,9 +1125,9 @@ fn installer_output_details(stdout_path: &Path, stderr_path: &Path) -> String {
 
 fn cleanup_optifine_version_dir(
     minecraft_dir: &Path,
-    option: OptifineInstallOptionSpec,
+    option: &OptifineInstallOption,
 ) -> LauncherResult<()> {
-    let version_dir = minecraft_dir.join("versions").join(option.version_id());
+    let version_dir = minecraft_dir.join("versions").join(&option.version_id);
     if version_dir.exists() {
         fs::remove_dir_all(&version_dir)?;
     }
@@ -1103,9 +1137,9 @@ fn cleanup_optifine_version_dir(
 
 fn verify_optifine_install(
     minecraft_dir: &Path,
-    option: OptifineInstallOptionSpec,
+    option: &OptifineInstallOption,
 ) -> LauncherResult<()> {
-    let version_id = option.version_id();
+    let version_id = option.version_id.as_str();
     let version_dir = minecraft_dir.join("versions").join(&version_id);
     let version_json = version_dir.join(format!("{version_id}.json"));
     let version_jar = version_dir.join(format!("{version_id}.jar"));
@@ -1544,14 +1578,18 @@ mod tests {
 
     use super::{
         collect_required_libraries, extract_optifine_download_path, maven_artifact_path,
-        optifine_install_options, safe_join, DownloadArtifact, GameLibrary, LibraryDownloads,
-        OPTIFINE_OPTIONS,
+        parse_optifine_downloads_html, safe_join, DownloadArtifact, GameLibrary, LibraryDownloads,
     };
     use tempfile::tempdir;
 
     #[test]
-    fn catalog_exposes_requested_optifine_versions() {
-        let options = optifine_install_options();
+    fn parses_latest_optifine_per_minecraft_version() {
+        let html = r#"
+          <a href="adloadx?f=OptiFine_1.20.4_HD_U_I7.jar">Download</a>
+          <a href="adloadx?f=OptiFine_1.20.4_HD_U_I6.jar">Older</a>
+          <a href="adloadx?f=OptiFine_1.16.5_HD_U_G8.jar">Download</a>
+        "#;
+        let options = parse_optifine_downloads_html(html);
         let ids = options
             .iter()
             .map(|option| option.version_id.as_str())
@@ -1560,12 +1598,10 @@ mod tests {
         assert_eq!(
             ids,
             vec![
-                "1.8.9-OptiFine_HD_U_M5",
-                "1.16.5-OptiFine_HD_U_G8",
-                "1.21.11-OptiFine_HD_U_J9"
+                "1.20.4-OptiFine_HD_U_I7",
+                "1.16.5-OptiFine_HD_U_G8"
             ]
         );
-        assert_eq!(OPTIFINE_OPTIONS[2].minecraft_version, "1.21.11");
     }
 
     #[test]

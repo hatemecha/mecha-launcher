@@ -625,8 +625,10 @@ pub fn list_versions(minecraft_dir: String) -> Result<Vec<MinecraftVersionSummar
 }
 
 #[tauri::command]
-pub fn list_optifine_install_options() -> Vec<OptifineInstallOption> {
-    launcher::install::optifine_install_options()
+pub async fn list_optifine_install_options() -> Result<Vec<OptifineInstallOption>, String> {
+    launcher::install::list_optifine_install_options()
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

@@ -7,9 +7,9 @@
   --bg-card: #161616;
   --bg-input: #1a1a1a;
   --bg-hover: #202020;
-  --red: #ff2e2e;
-  --red-soft: rgba(255, 46, 46, 0.22);
-  --red-border: rgba(255, 70, 70, 0.72);
+  --red: #b80109;
+  --red-soft: rgba(184, 1, 9, 0.32);
+  --red-border: rgba(184, 1, 9, 0.85);
   --white: #e8e8e8;
   --gray: #7a7a7a;
   --gray-dim: #4a4a4a;
@@ -41,9 +41,9 @@
   --bg-card: #f7f6f3;
   --bg-input: #f0eee9;
   --bg-hover: #e9e5dc;
-  --red: #d60000;
-  --red-soft: rgba(214, 0, 0, 0.14);
-  --red-border: rgba(214, 0, 0, 0.55);
+  --red: #b80109;
+  --red-soft: rgba(184, 1, 9, 0.18);
+  --red-border: rgba(184, 1, 9, 0.7);
   --white: #171717;
   --gray: #5c5c5c;
   --gray-dim: #8a8479;
@@ -62,9 +62,9 @@
     --bg-card: #f7f6f3;
     --bg-input: #f0eee9;
     --bg-hover: #e9e5dc;
-    --red: #d60000;
-    --red-soft: rgba(214, 0, 0, 0.14);
-    --red-border: rgba(214, 0, 0, 0.55);
+    --red: #b80109;
+    --red-soft: rgba(184, 1, 9, 0.18);
+    --red-border: rgba(184, 1, 9, 0.7);
     --white: #171717;
     --gray: #5c5c5c;
     --gray-dim: #8a8479;
@@ -279,7 +279,7 @@ code {
   grid-template-rows: auto auto minmax(0, 1fr);
   flex: 1;
   width: 100%;
-  max-width: 1180px;
+  max-width: 1560px;
   min-height: 0;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -397,7 +397,10 @@ h1.stage-title-lockup .stage-title-wordmark {
 
 .stage-content {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns:
+    minmax(0, 1fr)
+    minmax(0, 1fr)
+    minmax(0, 1.25fr);
   gap: 12px;
   min-height: 0;
   margin: 0 18px 18px;
@@ -577,7 +580,7 @@ h1.stage-title-lockup .stage-title-wordmark {
   grid-template-columns: minmax(120px, 0.75fr) minmax(0, 1fr) minmax(160px, 1fr);
   gap: 12px;
   width: 100%;
-  max-width: 1180px;
+  max-width: 1560px;
   margin-top: 5px;
   padding: 0 2px;
   color: var(--gray-dim);

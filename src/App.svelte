@@ -81,7 +81,6 @@
   let selectedVersionId = "";
   let offlineUsername = loadOfflineUsername() ?? DEFAULT_OFFLINE_USERNAME;
   let offlineSkinUrl = loadOfflineSkinDataUrl();
-  let slimArms = false;
   let errorMessage = "";
   let statusMessage = translate(locale, "statusWaitingDir");
   let isLoadingVersions = false;
@@ -1172,7 +1171,7 @@
               <svg class="app-icon" aria-hidden="true"><use href="#icon-cube" /></svg>
               <span class="sr-only">Skin</span>
             </div>
-            <PlayerScene skinUrl={offlineSkinUrl} {slimArms} sceneAriaLabel="Skin preview 3D" />
+            <PlayerScene skinUrl={offlineSkinUrl} sceneAriaLabel="Skin preview 3D" />
           </section>
 
           <section class="stage-pane log-pane" aria-label={t("paneOutputSr")}>
@@ -1324,16 +1323,6 @@
               void handleLocalSkinFile((event.currentTarget as HTMLInputElement).files?.[0] ?? null)}
             aria-label="Elegir skin PNG"
           />
-          <label class="help-text" style="display:flex; gap:10px; align-items:center; margin-top: 6px;">
-            <input
-              type="checkbox"
-              checked={slimArms}
-              on:change={(event) => {
-                slimArms = (event.currentTarget as HTMLInputElement).checked;
-              }}
-            />
-            <span>Modelo Alex (brazos finos)</span>
-          </label>
         </div>
       </section>
 

@@ -3,7 +3,6 @@
 
   export let skinUrl: string | null = null;
   export let sceneAriaLabel = "";
-  export let slimArms = false;
 
   let container: HTMLDivElement | null = null;
   let canvasEl: HTMLCanvasElement | null = null;
@@ -34,15 +33,7 @@
       return;
     }
     currentSkinUrl = trimmed;
-    await viewer.loadSkin(trimmed, { model: slimArms ? "slim" : "default" });
-  }
-
-  async function applyModelType(): Promise<void> {
-    if (!viewer || !currentSkinUrl) {
-      return;
-    }
-    // Reload skin to switch geometry between default/slim reliably.
-    await viewer.loadSkin(currentSkinUrl, { model: slimArms ? "slim" : "default" });
+    await viewer.loadSkin(trimmed, { model: "default" });
   }
 
   onMount(() => {
@@ -82,7 +73,6 @@
   });
 
   $: void applySkin(skinUrl);
-  $: void applyModelType();
 
   onDestroy(() => {
     resizeObserver?.disconnect();
