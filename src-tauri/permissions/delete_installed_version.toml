@@ -1,0 +1,12 @@
+# Allows deleting an installed version directory under .minecraft/versions.
+
+[[permission]]
+identifier = "allow-delete-installed-version"
+description = "Enables the delete_installed_version command."
+commands.allow = ["delete_installed_version"]
+
+[[permission]]
+identifier = "deny-delete-installed-version"
+description = "Denies the delete_installed_version command."
+commands.deny = ["delete_installed_version"]
+

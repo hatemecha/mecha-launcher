@@ -345,26 +345,38 @@ fn prepare_launch_reports_actionable_missing_inputs() {
         }"#,
         true,
     );
+    let native_os = if cfg!(windows) {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "osx"
+    } else {
+        "linux"
+    };
+    let native_classifier = format!("natives-{native_os}");
+    let missing_natives_manifest = format!(
+        r#"{{
+          "id":"missing-natives",
+          "mainClass":"net.minecraft.client.main.Main",
+          "assetIndex":{{"id":"assets-ok"}},
+          "javaVersion":{{"component":"jre-legacy","majorVersion":8}},
+          "minecraftArguments":"--username ${{auth_player_name}}",
+          "libraries":[
+            {{
+              "name":"com.example:demo:1.0.0",
+              "downloads":{{
+                "artifact":{{"path":"com/example/demo/1.0.0/demo-1.0.0.jar"}},
+                "classifiers":{{"{native_classifier}":{{"path":"com/example/demo/1.0.0/demo-1.0.0-{native_classifier}.jar"}}}}
+              }},
+              "natives":{{"{native_os}":"{native_classifier}"}}
+            }}
+          ]
+        }}"#
+    );
+
     write_version(
         &minecraft_dir,
         "missing-natives",
-        r#"{
-          "id":"missing-natives",
-          "mainClass":"net.minecraft.client.main.Main",
-          "assetIndex":{"id":"assets-ok"},
-          "javaVersion":{"component":"jre-legacy","majorVersion":8},
-          "minecraftArguments":"--username ${auth_player_name}",
-          "libraries":[
-            {
-              "name":"com.example:demo:1.0.0",
-              "downloads":{
-                "artifact":{"path":"com/example/demo/1.0.0/demo-1.0.0.jar"},
-                "classifiers":{"natives-windows":{"path":"com/example/demo/1.0.0/demo-1.0.0-natives-windows.jar"}}
-              },
-              "natives":{"windows":"natives-windows"}
-            }
-          ]
-        }"#,
+        &missing_natives_manifest,
         true,
     );
     write_runtime_java(&minecraft_dir, "jre-legacy");
@@ -419,21 +431,35 @@ fn prepare_launch_reports_actionable_missing_inputs() {
 #[test]
 fn run_launch_forwards_stdout_and_stderr_logs() {
     let temp_dir = tempdir().expect("tempdir should be created");
-    let script_path = temp_dir.path().join("fake-java.cmd");
-    fs::write(
-        &script_path,
-        "@echo off\r\necho hello stdout\r\necho hello stderr 1>&2\r\n",
-    )
-    .expect("script should be written");
+    let (java_executable, jvm_args) = if cfg!(windows) {
+        let script_path = temp_dir.path().join("fake-java.cmd");
+        fs::write(
+            &script_path,
+            "@echo off\r\necho hello stdout\r\necho hello stderr 1>&2\r\n",
+        )
+        .expect("script should be written");
+        (
+            PathBuf::from("cmd.exe"),
+            vec!["/C".to_string(), script_path.to_string_lossy().to_string()],
+        )
+    } else {
+        (
+            PathBuf::from("/bin/sh"),
+            vec![
+                "-c".to_string(),
+                "echo hello stdout; echo hello stderr >&2".to_string(),
+            ],
+        )
+    };
 
     let sink = Arc::new(RecordingSink::default());
     let plan = LaunchPlan {
         launch_id: "fake-launch".to_string(),
         minecraft_dir: temp_dir.path().to_path_buf(),
         version_id: "fake".to_string(),
-        java_executable: PathBuf::from("cmd.exe"),
+        java_executable,
         main_class: "ignored".to_string(),
-        jvm_args: vec!["/C".to_string(), script_path.to_string_lossy().to_string()],
+        jvm_args,
         game_args: Vec::new(),
         classpath_entries: Vec::new(),
         cleanup_temp_dir: None,
@@ -501,12 +527,13 @@ fn write_asset_index(minecraft_dir: &Path, asset_index_id: &str) {
 }
 
 fn write_runtime_java(minecraft_dir: &Path, component: &str) {
+    let executable_name = if cfg!(windows) { "java.exe" } else { "java" };
     let bin_dir = minecraft_dir
         .join("runtime")
         .join(component)
-        .join("windows")
+        .join(if cfg!(windows) { "windows" } else { "linux" })
         .join(component)
         .join("bin");
     fs::create_dir_all(&bin_dir).expect("runtime dir should exist");
-    fs::write(bin_dir.join("java.exe"), b"fake-java").expect("runtime java should be written");
+    fs::write(bin_dir.join(executable_name), b"fake-java").expect("runtime java should be written");
 }

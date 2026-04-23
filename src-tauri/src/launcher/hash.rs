@@ -129,9 +129,87 @@ pub fn md5(input: &[u8]) -> [u8; 16] {
     digest
 }
 
+pub fn sha1(input: &[u8]) -> [u8; 20] {
+    let mut message = input.to_vec();
+    let bit_len = (message.len() as u64) * 8;
+
+    message.push(0x80);
+    while (message.len() % 64) != 56 {
+        message.push(0);
+    }
+    message.extend_from_slice(&bit_len.to_be_bytes());
+
+    let mut h0: u32 = 0x6745_2301;
+    let mut h1: u32 = 0xefcd_ab89;
+    let mut h2: u32 = 0x98ba_dcfe;
+    let mut h3: u32 = 0x1032_5476;
+    let mut h4: u32 = 0xc3d2_e1f0;
+
+    for chunk in message.chunks_exact(64) {
+        let mut words = [0u32; 80];
+        for (index, block) in chunk.chunks_exact(4).enumerate() {
+            words[index] = u32::from_be_bytes([block[0], block[1], block[2], block[3]]);
+        }
+
+        for index in 16..80 {
+            words[index] =
+                (words[index - 3] ^ words[index - 8] ^ words[index - 14] ^ words[index - 16])
+                    .rotate_left(1);
+        }
+
+        let mut a = h0;
+        let mut b = h1;
+        let mut c = h2;
+        let mut d = h3;
+        let mut e = h4;
+
+        for (index, word) in words.iter().enumerate() {
+            let (f, k) = match index {
+                0..=19 => ((b & c) | ((!b) & d), 0x5a82_7999),
+                20..=39 => (b ^ c ^ d, 0x6ed9_eba1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8f1b_bcdc),
+                _ => (b ^ c ^ d, 0xca62_c1d6),
+            };
+
+            let temp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(*word);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = temp;
+        }
+
+        h0 = h0.wrapping_add(a);
+        h1 = h1.wrapping_add(b);
+        h2 = h2.wrapping_add(c);
+        h3 = h3.wrapping_add(d);
+        h4 = h4.wrapping_add(e);
+    }
+
+    let mut digest = [0u8; 20];
+    digest[0..4].copy_from_slice(&h0.to_be_bytes());
+    digest[4..8].copy_from_slice(&h1.to_be_bytes());
+    digest[8..12].copy_from_slice(&h2.to_be_bytes());
+    digest[12..16].copy_from_slice(&h3.to_be_bytes());
+    digest[16..20].copy_from_slice(&h4.to_be_bytes());
+    digest
+}
+
+pub fn sha1_hex(input: &[u8]) -> String {
+    sha1(input)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::md5;
+    use super::{md5, sha1_hex};
 
     #[test]
     fn md5_matches_known_vector() {
@@ -142,5 +220,13 @@ mod tests {
             .collect::<String>();
 
         assert_eq!(hex, "a01e3843e5215998558af459800e4d11");
+    }
+
+    #[test]
+    fn sha1_matches_known_vector() {
+        assert_eq!(
+            sha1_hex(b"The quick brown fox jumps over the lazy dog"),
+            "2fd4e1c67a2d28fced849ee1bb76e7391b93eb12"
+        );
     }
 }

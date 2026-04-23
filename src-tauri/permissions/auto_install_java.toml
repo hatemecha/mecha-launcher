@@ -1,0 +1,12 @@
+# Allows executing a safe, pre-defined Java installation flow.
+
+[[permission]]
+identifier = "allow-auto-install-java"
+description = "Enables the auto_install_java command without any pre-configured scope."
+commands.allow = ["auto_install_java"]
+
+[[permission]]
+identifier = "deny-auto-install-java"
+description = "Denies the auto_install_java command without any pre-configured scope."
+commands.deny = ["auto_install_java"]
+

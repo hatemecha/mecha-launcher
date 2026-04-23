@@ -1,0 +1,1689 @@
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Component, Path, PathBuf},
+    process::{Command, Stdio},
+    sync::Arc,
+    thread,
+    time::{Duration, Instant},
+};
+
+use regex::Regex;
+use reqwest::{header, Client};
+use serde::{Deserialize, Serialize};
+use tempfile::tempdir;
+use walkdir::WalkDir;
+
+use crate::launcher::{
+    hash::sha1_hex,
+    manifest::JavaVersion,
+    rules::{rules_allow, Rule, RuntimeEnvironment},
+    LauncherError, LauncherResult,
+};
+
+const VERSION_MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
+const JAVA_RUNTIME_MANIFEST_URL: &str =
+    "https://launchermeta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json";
+const LIBRARIES_BASE_URL: &str = "https://libraries.minecraft.net/";
+const ASSETS_BASE_URL: &str = "https://resources.download.minecraft.net/";
+const OPTIFINE_ADLOAD_BASE_URL: &str = "https://optifine.net/adloadx";
+const OPTIFINE_BASE_URL: &str = "https://optifine.net/";
+const OPTIFINE_INSTALLER_TIMEOUT: Duration = Duration::from_secs(300);
+const OPTIFINE_INSTALLER_ERROR_TAIL_LINES: usize = 80;
+const OPTIFINE_INSTALLER_ERROR_MAX_CHARS: usize = 12_000;
+const INSTALLER_RUNNER_SOURCE: &str = r#"import java.io.File;
+import java.lang.reflect.Method;
+
+public class InstallOptiFine {
+  public static void main(String[] args) throws Exception {
+    Class<?> installer = Class.forName("optifine.Installer");
+    Method doInstall = installer.getDeclaredMethod("doInstall", File.class);
+    doInstall.setAccessible(true);
+    doInstall.invoke(null, new File(args[0]));
+  }
+}
+"#;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OptifineInstallOption {
+    pub id: String,
+    pub minecraft_version: String,
+    pub optifine_version: String,
+    pub edition: String,
+    pub file_name: String,
+    pub version_id: String,
+    pub title: String,
+    pub summary: String,
+    pub release_kind: String,
+    pub recommended_java_major: u32,
+    pub source_url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OptifineInstallStatusEvent {
+    pub option_id: String,
+    pub stage: String,
+    pub message: String,
+    pub current: Option<u32>,
+    pub total: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OptifineInstallResult {
+    pub version_id: String,
+    pub minecraft_version: String,
+    pub optifine_version: String,
+}
+
+type ProgressSink = Arc<dyn Fn(OptifineInstallStatusEvent) + Send + Sync>;
+
+#[derive(Debug, Clone, Copy)]
+struct OptifineInstallOptionSpec {
+    id: &'static str,
+    minecraft_version: &'static str,
+    edition: &'static str,
+    file_name: &'static str,
+    release_kind: &'static str,
+    recommended_java_major: u32,
+    summary: &'static str,
+}
+
+const OPTIFINE_OPTIONS: [OptifineInstallOptionSpec; 3] = [
+    OptifineInstallOptionSpec {
+        id: "optifine-1-8-9",
+        minecraft_version: "1.8.9",
+        edition: "HD_U_M5",
+        file_name: "OptiFine_1.8.9_HD_U_M5.jar",
+        release_kind: "Estable",
+        recommended_java_major: 8,
+        summary: "PvP clasico, estable y liviano.",
+    },
+    OptifineInstallOptionSpec {
+        id: "optifine-1-16-5",
+        minecraft_version: "1.16.5",
+        edition: "HD_U_G8",
+        file_name: "OptiFine_1.16.5_HD_U_G8.jar",
+        release_kind: "Estable",
+        recommended_java_major: 8,
+        summary: "Nether Update con soporte amplio de shaders.",
+    },
+    OptifineInstallOptionSpec {
+        id: "optifine-latest",
+        minecraft_version: "1.21.11",
+        edition: "HD_U_J9",
+        file_name: "OptiFine_1.21.11_HD_U_J9.jar",
+        release_kind: "Ultima con OptiFine",
+        recommended_java_major: 21,
+        summary: "La version mas nueva publicada por OptiFine.",
+    },
+];
+
+#[derive(Debug, Deserialize)]
+struct VersionManifest {
+    versions: Vec<VersionManifestEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VersionManifestEntry {
+    id: String,
+    #[serde(rename = "type")]
+    kind: String,
+    url: String,
+    #[serde(rename = "releaseTime")]
+    release_time: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VanillaRelease {
+    pub id: String,
+    pub release_time: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VanillaInstallStatusEvent {
+    pub version_id: String,
+    pub stage: String,
+    pub message: String,
+    pub current: Option<u32>,
+    pub total: Option<u32>,
+}
+
+type VanillaProgressSink = Arc<dyn Fn(VanillaInstallStatusEvent) + Send + Sync>;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GameVersionManifest {
+    id: String,
+    asset_index: Option<AssetIndex>,
+    downloads: GameDownloads,
+    #[serde(default)]
+    libraries: Vec<GameLibrary>,
+    #[serde(default)]
+    java_version: Option<JavaVersion>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GameDownloads {
+    client: DownloadArtifact,
+}
+
+#[derive(Debug, Deserialize)]
+struct AssetIndex {
+    id: String,
+    url: String,
+    #[serde(default)]
+    sha1: Option<String>,
+    #[serde(default)]
+    size: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AssetObjects {
+    objects: HashMap<String, AssetObject>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AssetObject {
+    hash: String,
+    #[serde(default)]
+    size: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct GameLibrary {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    downloads: Option<LibraryDownloads>,
+    #[serde(default)]
+    natives: HashMap<String, String>,
+    #[serde(default)]
+    rules: Vec<Rule>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct LibraryDownloads {
+    #[serde(default)]
+    artifact: Option<DownloadArtifact>,
+    #[serde(default)]
+    classifiers: HashMap<String, DownloadArtifact>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct DownloadArtifact {
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    sha1: Option<String>,
+    #[serde(default)]
+    size: Option<u64>,
+    url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct JavaRuntimeIndex(HashMap<String, HashMap<String, Vec<JavaRuntimeEntry>>>);
+
+#[derive(Debug, Deserialize)]
+struct JavaRuntimeEntry {
+    manifest: JavaRuntimeManifestRef,
+}
+
+#[derive(Debug, Deserialize)]
+struct JavaRuntimeManifestRef {
+    url: String,
+    #[serde(default)]
+    sha1: Option<String>,
+    #[serde(default)]
+    size: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct JavaRuntimeManifest {
+    files: HashMap<String, JavaRuntimeFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct JavaRuntimeFile {
+    #[serde(rename = "type")]
+    file_type: String,
+    #[serde(default)]
+    downloads: Option<JavaRuntimeDownloads>,
+    #[serde(default)]
+    executable: bool,
+    #[serde(default)]
+    target: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct JavaRuntimeDownloads {
+    raw: Option<DownloadArtifact>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DownloadOutcome {
+    Downloaded,
+    Reused,
+}
+
+impl OptifineInstallOptionSpec {
+    fn option(self) -> OptifineInstallOption {
+        let optifine_version = format!("OptiFine_{}_{}", self.minecraft_version, self.edition);
+
+        OptifineInstallOption {
+            id: self.id.to_string(),
+            minecraft_version: self.minecraft_version.to_string(),
+            optifine_version,
+            edition: self.edition.to_string(),
+            file_name: self.file_name.to_string(),
+            version_id: self.version_id(),
+            title: format!("Minecraft {}", self.minecraft_version),
+            summary: self.summary.to_string(),
+            release_kind: self.release_kind.to_string(),
+            recommended_java_major: self.recommended_java_major,
+            source_url: format!("{OPTIFINE_ADLOAD_BASE_URL}?f={}", self.file_name),
+        }
+    }
+
+    fn version_id(self) -> String {
+        format!("{}-OptiFine_{}", self.minecraft_version, self.edition)
+    }
+}
+
+pub fn optifine_install_options() -> Vec<OptifineInstallOption> {
+    OPTIFINE_OPTIONS
+        .into_iter()
+        .map(OptifineInstallOptionSpec::option)
+        .collect()
+}
+
+pub async fn list_vanilla_releases() -> LauncherResult<Vec<VanillaRelease>> {
+    let client = Client::builder()
+        .user_agent("mecha-launcher/0.1")
+        .build()
+        .map_err(|error| LauncherError::new(format!("Failed to create HTTP client: {error}")))?;
+
+    let manifest = fetch_json::<VersionManifest>(&client, VERSION_MANIFEST_URL).await?;
+    let releases = manifest
+        .versions
+        .into_iter()
+        .filter(|entry| entry.kind == "release")
+        .map(|entry| VanillaRelease {
+            id: entry.id,
+            release_time: entry.release_time,
+        })
+        .collect::<Vec<_>>();
+
+    // Mojang's manifest is already ordered (newest first).
+    // Keep server order to avoid lexical version sorting issues (e.g. 1.10 vs 1.9).
+    Ok(releases)
+}
+
+fn emit_vanilla(
+    progress: &VanillaProgressSink,
+    version_id: &str,
+    stage: &str,
+    message: &str,
+    current: Option<u32>,
+    total: Option<u32>,
+) {
+    progress(VanillaInstallStatusEvent {
+        version_id: version_id.to_string(),
+        stage: stage.to_string(),
+        message: message.to_string(),
+        current,
+        total,
+    });
+}
+
+pub async fn install_vanilla_version(
+    minecraft_dir: &Path,
+    version_id: &str,
+    progress: VanillaProgressSink,
+) -> LauncherResult<()> {
+    let version_id = version_id.to_string();
+    let version_id_str = version_id.as_str();
+    let client = Client::builder()
+        .user_agent("mecha-launcher/0.1")
+        .build()
+        .map_err(|error| LauncherError::new(format!("Failed to create HTTP client: {error}")))?;
+
+    emit_vanilla(
+        &progress,
+        version_id_str,
+        "prepare",
+        "Preparando carpetas de Minecraft.",
+        None,
+        None,
+    );
+    ensure_minecraft_layout(minecraft_dir)?;
+
+    let version_manifest = fetch_json::<VersionManifest>(&client, VERSION_MANIFEST_URL).await?;
+    let version_entry = version_manifest
+        .versions
+        .iter()
+        .find(|entry| entry.id == version_id_str)
+        .ok_or_else(|| {
+            LauncherError::new(format!(
+                "Minecraft {version_id_str} was not found in Mojang's version manifest."
+            ))
+        })?;
+
+    emit_vanilla(
+        &progress,
+        version_id_str,
+        "minecraft",
+        &format!("Descargando manifiesto de Minecraft {version_id_str}."),
+        None,
+        None,
+    );
+    let base_manifest_text = fetch_text(&client, &version_entry.url).await?;
+    let base_manifest = serde_json::from_str::<GameVersionManifest>(&base_manifest_text)
+        .map_err(|error| LauncherError::new(format!("Invalid Minecraft version manifest: {error}")))?;
+
+    // Reuse the same progress stream by mapping OptiFine-style events.
+    let progress_clone = progress.clone();
+    let version_id_for_progress = version_id.clone();
+    let mapped_progress: ProgressSink = Arc::new(move |event| {
+        emit_vanilla(
+            &progress_clone,
+            &version_id_for_progress,
+            &event.stage,
+            &event.message,
+            event.current,
+            event.total,
+        )
+    });
+
+    // This creates `versions/<manifest.id>` with json+jar.
+    install_base_manifest_and_client(
+        &client,
+        minecraft_dir,
+        version_id_str,
+        &base_manifest,
+        &base_manifest_text,
+        &mapped_progress,
+    )
+    .await?;
+
+    install_libraries(&client, minecraft_dir, version_id_str, &base_manifest, &mapped_progress).await?;
+    install_assets(&client, minecraft_dir, version_id_str, &base_manifest, &mapped_progress).await?;
+
+    if let Some(java_version) = base_manifest.java_version.as_ref() {
+        install_java_runtime(
+            &client,
+            minecraft_dir,
+            version_id_str,
+            java_version,
+            &mapped_progress,
+        )
+        .await?;
+    }
+
+    emit_vanilla(
+        &progress,
+        version_id_str,
+        "done",
+        &format!("Minecraft {version_id_str} quedo listo para jugar."),
+        Some(1),
+        Some(1),
+    );
+
+    Ok(())
+}
+
+pub async fn install_optifine_version(
+    minecraft_dir: &Path,
+    option_id: &str,
+    progress: ProgressSink,
+) -> LauncherResult<OptifineInstallResult> {
+    let option = find_option(option_id)?;
+    let client = Client::builder()
+        .user_agent("mecha-launcher/0.1")
+        .build()
+        .map_err(|error| LauncherError::new(format!("Failed to create HTTP client: {error}")))?;
+
+    emit(
+        &progress,
+        option.id,
+        "prepare",
+        "Preparando carpetas de Minecraft.",
+        None,
+        None,
+    );
+    ensure_minecraft_layout(minecraft_dir)?;
+    cleanup_optifine_version_dir(minecraft_dir, option)?;
+
+    let version_manifest = fetch_json::<VersionManifest>(&client, VERSION_MANIFEST_URL).await?;
+    let version_entry = version_manifest
+        .versions
+        .iter()
+        .find(|entry| entry.id == option.minecraft_version)
+        .ok_or_else(|| {
+            LauncherError::new(format!(
+                "Minecraft {} was not found in Mojang's version manifest.",
+                option.minecraft_version
+            ))
+        })?;
+
+    emit(
+        &progress,
+        option.id,
+        "minecraft",
+        &format!("Descargando manifiesto de Minecraft {}.", option.minecraft_version),
+        None,
+        None,
+    );
+    let base_manifest_text = fetch_text(&client, &version_entry.url).await?;
+    let base_manifest = serde_json::from_str::<GameVersionManifest>(&base_manifest_text)
+        .map_err(|error| LauncherError::new(format!("Invalid Minecraft version manifest: {error}")))?;
+    install_base_manifest_and_client(
+        &client,
+        minecraft_dir,
+        option.id,
+        &base_manifest,
+        &base_manifest_text,
+        &progress,
+    )
+    .await?;
+    install_libraries(&client, minecraft_dir, option.id, &base_manifest, &progress).await?;
+    install_assets(&client, minecraft_dir, option.id, &base_manifest, &progress).await?;
+
+    if let Some(java_version) = base_manifest.java_version.as_ref() {
+        install_java_runtime(&client, minecraft_dir, option.id, java_version, &progress).await?;
+    }
+
+    let optifine_jar = download_optifine_installer(&client, minecraft_dir, option, &progress).await?;
+    ensure_launcher_profiles_json(minecraft_dir)?;
+    if let Err(error) = run_optifine_installer(minecraft_dir, option, &optifine_jar, &progress).await
+    {
+        let _ = cleanup_optifine_version_dir(minecraft_dir, option);
+        return Err(error);
+    }
+    emit(
+        &progress,
+        option.id,
+        "optifine",
+        "OptiFine aplicado. Verificando archivos.",
+        Some(1),
+        Some(1),
+    );
+    verify_optifine_install(minecraft_dir, option)?;
+
+    emit(
+        &progress,
+        option.id,
+        "done",
+        &format!("{} quedo listo para jugar.", option.version_id()),
+        Some(1),
+        Some(1),
+    );
+
+    Ok(OptifineInstallResult {
+        version_id: option.version_id(),
+        minecraft_version: option.minecraft_version.to_string(),
+        optifine_version: format!("OptiFine_{}_{}", option.minecraft_version, option.edition),
+    })
+}
+
+fn find_option(option_id: &str) -> LauncherResult<OptifineInstallOptionSpec> {
+    OPTIFINE_OPTIONS
+        .into_iter()
+        .find(|option| option.id == option_id)
+        .ok_or_else(|| LauncherError::new(format!("Unknown OptiFine install option: {option_id}")))
+}
+
+fn emit(
+    progress: &ProgressSink,
+    option_id: &str,
+    stage: &str,
+    message: &str,
+    current: Option<u32>,
+    total: Option<u32>,
+) {
+    progress(OptifineInstallStatusEvent {
+        option_id: option_id.to_string(),
+        stage: stage.to_string(),
+        message: message.to_string(),
+        current,
+        total,
+    });
+}
+
+fn ensure_minecraft_layout(minecraft_dir: &Path) -> LauncherResult<()> {
+    for directory in ["versions", "libraries", "assets/indexes", "assets/objects", "runtime"] {
+        fs::create_dir_all(minecraft_dir.join(directory))?;
+    }
+
+    Ok(())
+}
+
+async fn install_base_manifest_and_client(
+    client: &Client,
+    minecraft_dir: &Path,
+    job_id: &str,
+    manifest: &GameVersionManifest,
+    manifest_text: &str,
+    progress: &ProgressSink,
+) -> LauncherResult<()> {
+    let version_dir = minecraft_dir.join("versions").join(&manifest.id);
+    fs::create_dir_all(&version_dir)?;
+    fs::write(
+        version_dir.join(format!("{}.json", manifest.id)),
+        manifest_text.as_bytes(),
+    )?;
+
+    let client_target = version_dir.join(format!("{}.jar", manifest.id));
+    emit(
+        progress,
+        job_id,
+        "minecraft",
+        &format!("Descargando cliente base {}.", manifest.id),
+        Some(0),
+        Some(1),
+    );
+    download_file(
+        client,
+        &manifest.downloads.client.url,
+        &client_target,
+        manifest.downloads.client.sha1.as_deref(),
+        manifest.downloads.client.size,
+        false,
+        None,
+    )
+    .await?;
+    emit(
+        progress,
+        job_id,
+        "minecraft",
+        &format!("Cliente base {} listo.", manifest.id),
+        Some(1),
+        Some(1),
+    );
+
+    Ok(())
+}
+
+async fn install_libraries(
+    client: &Client,
+    minecraft_dir: &Path,
+    job_id: &str,
+    manifest: &GameVersionManifest,
+    progress: &ProgressSink,
+) -> LauncherResult<()> {
+    let environment = RuntimeEnvironment::current();
+    let libraries = collect_required_libraries(&environment, &manifest.libraries)?;
+    let total = libraries.len() as u32;
+
+    emit(
+        progress,
+        job_id,
+        "libraries",
+        &format!("Preparando {} librerias.", total),
+        Some(0),
+        Some(total),
+    );
+
+    for (index, library) in libraries.iter().enumerate() {
+        let library_path = library.path.as_deref().ok_or_else(|| {
+            LauncherError::new(format!(
+                "Library download from {} is missing its target path.",
+                library.url
+            ))
+        })?;
+        let target = safe_join(&minecraft_dir.join("libraries"), library_path)?;
+        download_file(
+            client,
+            &library.url,
+            &target,
+            library.sha1.as_deref(),
+            library.size,
+            false,
+            None,
+        )
+        .await?;
+
+        let current = (index + 1) as u32;
+        if should_emit_progress(current, total) {
+            emit(
+                progress,
+                job_id,
+                "libraries",
+                &format!("Librerias listas: {current}/{total}."),
+                Some(current),
+                Some(total),
+            );
+        }
+    }
+
+    Ok(())
+}
+
+async fn install_assets(
+    client: &Client,
+    minecraft_dir: &Path,
+    job_id: &str,
+    manifest: &GameVersionManifest,
+    progress: &ProgressSink,
+) -> LauncherResult<()> {
+    let Some(asset_index) = manifest.asset_index.as_ref() else {
+        return Ok(());
+    };
+
+    emit(
+        progress,
+        job_id,
+        "assets",
+        &format!("Descargando indice de assets {}.", asset_index.id),
+        None,
+        None,
+    );
+
+    let index_text = fetch_text(client, &asset_index.url).await?;
+    let index_target = minecraft_dir
+        .join("assets")
+        .join("indexes")
+        .join(format!("{}.json", asset_index.id));
+    validate_bytes(
+        index_text.as_bytes(),
+        asset_index.sha1.as_deref(),
+        asset_index.size,
+        &asset_index.url,
+    )?;
+    fs::write(index_target, index_text.as_bytes())?;
+
+    let assets = serde_json::from_str::<AssetObjects>(&index_text)
+        .map_err(|error| LauncherError::new(format!("Invalid asset index: {error}")))?;
+    let total = assets.objects.len() as u32;
+
+    emit(
+        progress,
+        job_id,
+        "assets",
+        &format!("Preparando {} assets.", total),
+        Some(0),
+        Some(total),
+    );
+
+    for (index, asset) in assets.objects.values().enumerate() {
+        let prefix = asset
+            .hash
+            .get(0..2)
+            .ok_or_else(|| LauncherError::new("Asset hash is too short."))?;
+        let target = minecraft_dir
+            .join("assets")
+            .join("objects")
+            .join(prefix)
+            .join(&asset.hash);
+        let url = format!("{ASSETS_BASE_URL}{prefix}/{}", asset.hash);
+
+        download_file(
+            client,
+            &url,
+            &target,
+            Some(&asset.hash),
+            asset.size,
+            false,
+            None,
+        )
+        .await?;
+
+        let current = (index + 1) as u32;
+        if should_emit_progress(current, total) {
+            emit(
+                progress,
+                job_id,
+                "assets",
+                &format!("Assets listos: {current}/{total}."),
+                Some(current),
+                Some(total),
+            );
+        }
+    }
+
+    Ok(())
+}
+
+async fn install_java_runtime(
+    client: &Client,
+    minecraft_dir: &Path,
+    job_id: &str,
+    java_version: &JavaVersion,
+    progress: &ProgressSink,
+) -> LauncherResult<()> {
+    let platform = java_runtime_platform_key().ok_or_else(|| {
+        LauncherError::new(format!(
+            "No Mojang Java runtime is available for {} on this architecture.",
+            std::env::consts::OS
+        ))
+    })?;
+
+    emit(
+        progress,
+        job_id,
+        "runtime",
+        &format!(
+            "Preparando runtime {} (Java {}).",
+            java_version.component, java_version.major_version
+        ),
+        None,
+        None,
+    );
+
+    let runtime_index = fetch_json::<JavaRuntimeIndex>(client, JAVA_RUNTIME_MANIFEST_URL).await?;
+    let runtime_entry = runtime_index
+        .0
+        .get(platform)
+        .and_then(|components| components.get(&java_version.component))
+        .and_then(|entries| entries.first())
+        .ok_or_else(|| {
+            LauncherError::new(format!(
+                "Mojang does not publish {} for platform {platform}.",
+                java_version.component
+            ))
+        })?;
+
+    let manifest_text = fetch_text(client, &runtime_entry.manifest.url).await?;
+    validate_bytes(
+        manifest_text.as_bytes(),
+        runtime_entry.manifest.sha1.as_deref(),
+        runtime_entry.manifest.size,
+        &runtime_entry.manifest.url,
+    )?;
+    let runtime_manifest = serde_json::from_str::<JavaRuntimeManifest>(&manifest_text)
+        .map_err(|error| LauncherError::new(format!("Invalid Java runtime manifest: {error}")))?;
+
+    let runtime_root = minecraft_dir
+        .join("runtime")
+        .join(&java_version.component)
+        .join(platform)
+        .join(&java_version.component);
+    let files = runtime_manifest
+        .files
+        .iter()
+        .filter(|(_, file)| file.file_type == "file")
+        .collect::<Vec<_>>();
+    let total = files.len() as u32;
+
+    for (path, _file) in runtime_manifest
+        .files
+        .iter()
+        .filter(|(_, file)| file.file_type == "directory")
+    {
+        fs::create_dir_all(safe_join(&runtime_root, path)?)?;
+    }
+
+    for (index, (path, file)) in files.iter().enumerate() {
+        let Some(download) = file.downloads.as_ref().and_then(|downloads| downloads.raw.as_ref())
+        else {
+            continue;
+        };
+        let target = safe_join(&runtime_root, path)?;
+        download_file(
+            client,
+            &download.url,
+            &target,
+            download.sha1.as_deref(),
+            download.size,
+            file.executable,
+            None,
+        )
+        .await?;
+
+        let current = (index + 1) as u32;
+        if should_emit_progress(current, total) {
+            emit(
+                progress,
+                job_id,
+                "runtime",
+                &format!("Runtime Java listo: {current}/{total}."),
+                Some(current),
+                Some(total),
+            );
+        }
+    }
+
+    for (path, file) in runtime_manifest
+        .files
+        .iter()
+        .filter(|(_, file)| file.file_type == "link")
+    {
+        if let Some(target) = file.target.as_deref() {
+            create_runtime_link(&runtime_root, path, target)?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn download_optifine_installer(
+    client: &Client,
+    minecraft_dir: &Path,
+    option: OptifineInstallOptionSpec,
+    progress: &ProgressSink,
+) -> LauncherResult<PathBuf> {
+    emit(
+        progress,
+        option.id,
+        "optifine",
+        &format!("Buscando descarga oficial de {}.", option.file_name),
+        None,
+        None,
+    );
+
+    let adload_url = format!("{OPTIFINE_ADLOAD_BASE_URL}?f={}", option.file_name);
+    let html = fetch_text(client, &adload_url).await?;
+    let download_path = extract_optifine_download_path(&html, option.file_name)?;
+    let download_url = format!("{OPTIFINE_BASE_URL}{download_path}");
+    let installer_dir = minecraft_dir.join("versions").join("_mecha-cache").join("optifine");
+    fs::create_dir_all(&installer_dir)?;
+    let installer_path = installer_dir.join(option.file_name);
+
+    emit(
+        progress,
+        option.id,
+        "optifine",
+        &format!("Descargando {}.", option.file_name),
+        Some(0),
+        Some(1),
+    );
+    download_file(
+        client,
+        &download_url,
+        &installer_path,
+        None,
+        None,
+        false,
+        Some(&adload_url),
+    )
+    .await?;
+
+    emit(
+        progress,
+        option.id,
+        "optifine",
+        "Instalador OptiFine descargado.",
+        Some(1),
+        Some(1),
+    );
+
+    Ok(installer_path)
+}
+
+async fn run_optifine_installer(
+    minecraft_dir: &Path,
+    option: OptifineInstallOptionSpec,
+    optifine_jar: &Path,
+    progress: &ProgressSink,
+) -> LauncherResult<()> {
+    emit(
+        progress,
+        option.id,
+        "optifine",
+        "Aplicando instalador OptiFine.",
+        None,
+        None,
+    );
+
+    let minecraft_dir = minecraft_dir.to_path_buf();
+    let optifine_jar = optifine_jar.to_path_buf();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let java = resolve_installer_java()?;
+        let java_major = detect_java_major(&java).ok_or_else(|| {
+            LauncherError::new(
+                "Java was not found. Install Java 21 from the dependency panel before installing OptiFine.",
+            )
+        })?;
+
+        if java_major < 11 {
+            return Err(LauncherError::new(format!(
+                "The OptiFine installer needs Java 11 or newer, but PATH reports Java {java_major}."
+            )));
+        }
+
+        let runner_dir = tempdir().map_err(|error| {
+            LauncherError::new(format!("Failed to create installer runner directory: {error}"))
+        })?;
+        let runner_source = runner_dir.path().join("InstallOptiFine.java");
+        fs::write(&runner_source, INSTALLER_RUNNER_SOURCE)?;
+
+        let stdout_path = runner_dir.path().join("optifine-installer.stdout.log");
+        let stderr_path = runner_dir.path().join("optifine-installer.stderr.log");
+        let stdout_file = fs::File::create(&stdout_path).map_err(|error| {
+            LauncherError::new(format!("Failed to create OptiFine stdout log: {error}"))
+        })?;
+        let stderr_file = fs::File::create(&stderr_path).map_err(|error| {
+            LauncherError::new(format!("Failed to create OptiFine stderr log: {error}"))
+        })?;
+
+        let mut child = Command::new(java)
+            .arg("-Djava.awt.headless=true")
+            .arg("-cp")
+            .arg(&optifine_jar)
+            .arg(&runner_source)
+            .arg(&minecraft_dir)
+            .stdout(Stdio::from(stdout_file))
+            .stderr(Stdio::from(stderr_file))
+            .spawn()
+            .map_err(|error| LauncherError::new(format!("Failed to run OptiFine installer: {error}")))?;
+
+        let started_at = Instant::now();
+        loop {
+            if let Some(status) = child.try_wait().map_err(|error| {
+                LauncherError::new(format!("Failed to poll OptiFine installer: {error}"))
+            })? {
+                if status.success() {
+                    return Ok(());
+                }
+
+                let details = installer_output_details(&stdout_path, &stderr_path);
+
+                return Err(LauncherError::new(format!(
+                    "OptiFine installer exited with status {status}.{details}"
+                )));
+            }
+
+            if started_at.elapsed() > OPTIFINE_INSTALLER_TIMEOUT {
+                let _ = child.kill();
+                let _ = child.wait();
+
+                let details = installer_output_details(&stdout_path, &stderr_path);
+                return Err(LauncherError::new(
+                    format!("OptiFine installer timed out while applying patches.{details}"),
+                ));
+            }
+
+            thread::sleep(Duration::from_millis(250));
+        }
+    })
+    .await
+    .map_err(|error| LauncherError::new(format!("OptiFine installer task failed: {error}")))?
+}
+
+fn ensure_launcher_profiles_json(minecraft_dir: &Path) -> LauncherResult<()> {
+    let profiles_path = minecraft_dir.join("launcher_profiles.json");
+
+    if !profiles_path.exists() {
+        let profiles = serde_json::json!({
+            "profiles": {},
+            "selectedProfile": "OptiFine"
+        });
+        let contents = serde_json::to_vec_pretty(&profiles)?;
+        fs::write(profiles_path, contents)?;
+        return Ok(());
+    }
+
+    let contents = fs::read_to_string(&profiles_path).map_err(|error| {
+        LauncherError::new(format!(
+            "Failed to read launcher profile file {}: {error}",
+            profiles_path.display()
+        ))
+    })?;
+    let mut profiles = serde_json::from_str::<serde_json::Value>(&contents).map_err(|error| {
+        LauncherError::new(format!(
+            "Invalid launcher profile file {}: {error}",
+            profiles_path.display()
+        ))
+    })?;
+
+    let Some(profile_object) = profiles.as_object_mut() else {
+        return Err(LauncherError::new(format!(
+            "Invalid launcher profile file {}: expected a JSON object.",
+            profiles_path.display()
+        )));
+    };
+
+    if !profile_object
+        .get("profiles")
+        .map(|value| value.is_object())
+        .unwrap_or(false)
+    {
+        profile_object.insert("profiles".to_string(), serde_json::json!({}));
+        let contents = serde_json::to_vec_pretty(&profiles)?;
+        fs::write(profiles_path, contents)?;
+    }
+
+    Ok(())
+}
+
+fn installer_output_details(stdout_path: &Path, stderr_path: &Path) -> String {
+    let stdout_log = fs::read_to_string(stdout_path).unwrap_or_default();
+    let stderr_log = fs::read_to_string(stderr_path).unwrap_or_default();
+    let combined = [stdout_log.trim(), stderr_log.trim()]
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if combined.is_empty() {
+        return String::new();
+    }
+
+    let lines = combined.lines().collect::<Vec<_>>();
+    let was_line_truncated = lines.len() > OPTIFINE_INSTALLER_ERROR_TAIL_LINES;
+    let start = lines.len().saturating_sub(OPTIFINE_INSTALLER_ERROR_TAIL_LINES);
+    let mut output = lines[start..].join("\n");
+
+    if output.chars().count() > OPTIFINE_INSTALLER_ERROR_MAX_CHARS {
+        let chars = output.chars().collect::<Vec<_>>();
+        let start = chars.len().saturating_sub(OPTIFINE_INSTALLER_ERROR_MAX_CHARS);
+        output = chars[start..].iter().collect::<String>();
+    }
+
+    let label = if was_line_truncated {
+        format!(
+            "\n\nInstaller output (last {} lines):\n",
+            OPTIFINE_INSTALLER_ERROR_TAIL_LINES
+        )
+    } else {
+        "\n\nInstaller output:\n".to_string()
+    };
+
+    format!("{label}{output}")
+}
+
+fn cleanup_optifine_version_dir(
+    minecraft_dir: &Path,
+    option: OptifineInstallOptionSpec,
+) -> LauncherResult<()> {
+    let version_dir = minecraft_dir.join("versions").join(option.version_id());
+    if version_dir.exists() {
+        fs::remove_dir_all(&version_dir)?;
+    }
+
+    Ok(())
+}
+
+fn verify_optifine_install(
+    minecraft_dir: &Path,
+    option: OptifineInstallOptionSpec,
+) -> LauncherResult<()> {
+    let version_id = option.version_id();
+    let version_dir = minecraft_dir.join("versions").join(&version_id);
+    let version_json = version_dir.join(format!("{version_id}.json"));
+    let version_jar = version_dir.join(format!("{version_id}.jar"));
+    let optifine_library = minecraft_dir
+        .join("libraries")
+        .join("optifine")
+        .join("OptiFine")
+        .join(format!("{}_{}", option.minecraft_version, option.edition))
+        .join(format!(
+            "OptiFine-{}_{}.jar",
+            option.minecraft_version, option.edition
+        ));
+
+    for required_file in [&version_json, &version_jar, &optifine_library] {
+        if !required_file.is_file() {
+            return Err(LauncherError::new(format!(
+                "OptiFine installer did not create required file: {}",
+                required_file.display()
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn collect_required_libraries(
+    environment: &RuntimeEnvironment,
+    libraries: &[GameLibrary],
+) -> LauncherResult<Vec<DownloadArtifact>> {
+    let mut artifacts = Vec::new();
+
+    for library in libraries {
+        if !rules_allow(&library.rules, environment)? {
+            continue;
+        }
+
+        if let Some(artifact) = library
+            .downloads
+            .as_ref()
+            .and_then(|downloads| downloads.artifact.as_ref())
+            .cloned()
+            .or_else(|| fallback_library_artifact(library))
+        {
+            artifacts.push(artifact);
+        }
+
+        let Some(native_classifier) = library
+            .natives
+            .get(&environment.os_name)
+            .or_else(|| {
+                if environment.os_name == "osx" {
+                    library.natives.get("macos")
+                } else {
+                    None
+                }
+            })
+            .map(|value| value.replace("${arch}", &environment.arch_bits))
+        else {
+            continue;
+        };
+
+        if let Some(native) = library
+            .downloads
+            .as_ref()
+            .and_then(|downloads| downloads.classifiers.get(&native_classifier))
+            .cloned()
+            .or_else(|| fallback_library_classifier_artifact(library, &native_classifier))
+        {
+            artifacts.push(native);
+        }
+    }
+
+    Ok(artifacts)
+}
+
+fn fallback_library_artifact(library: &GameLibrary) -> Option<DownloadArtifact> {
+    if !library.natives.is_empty() {
+        return None;
+    }
+
+    fallback_library_artifact_with_classifier(library, None)
+}
+
+fn fallback_library_classifier_artifact(
+    library: &GameLibrary,
+    classifier: &str,
+) -> Option<DownloadArtifact> {
+    fallback_library_artifact_with_classifier(library, Some(classifier))
+}
+
+fn fallback_library_artifact_with_classifier(
+    library: &GameLibrary,
+    classifier: Option<&str>,
+) -> Option<DownloadArtifact> {
+    let name = library.name.as_ref()?;
+    let path = maven_artifact_path(name, classifier)?;
+    let base_url = library.url.as_deref().unwrap_or(LIBRARIES_BASE_URL);
+    let url = format!("{}{}", ensure_trailing_slash(base_url), path);
+
+    Some(DownloadArtifact {
+        path: Some(path),
+        sha1: None,
+        size: None,
+        url,
+    })
+}
+
+fn maven_artifact_path(raw_value: &str, classifier_override: Option<&str>) -> Option<String> {
+    let (coordinates, extension) = raw_value.split_once('@').unwrap_or((raw_value, "jar"));
+    let segments = coordinates.split(':').collect::<Vec<_>>();
+    let (group, artifact, version, classifier) = match segments.as_slice() {
+        [group, artifact, version] => (*group, *artifact, *version, None),
+        [group, artifact, version, classifier] => (*group, *artifact, *version, Some(*classifier)),
+        _ => return None,
+    };
+
+    let classifier = classifier_override.or(classifier);
+    let mut file_name = format!("{artifact}-{version}");
+    if let Some(classifier) = classifier {
+        file_name.push('-');
+        file_name.push_str(classifier);
+    }
+    file_name.push('.');
+    file_name.push_str(extension);
+
+    Some(format!(
+        "{}/{artifact}/{version}/{file_name}",
+        group.replace('.', "/")
+    ))
+}
+
+fn ensure_trailing_slash(value: &str) -> String {
+    if value.ends_with('/') {
+        value.to_string()
+    } else {
+        format!("{value}/")
+    }
+}
+
+async fn fetch_json<T>(client: &Client, url: &str) -> LauncherResult<T>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let text = fetch_text(client, url).await?;
+    serde_json::from_str(&text).map_err(|error| {
+        LauncherError::new(format!("Failed to parse JSON from {url}: {error}"))
+    })
+}
+
+async fn fetch_text(client: &Client, url: &str) -> LauncherResult<String> {
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| LauncherError::new(format!("Failed to GET {url}: {error}")))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        return Err(LauncherError::new(format!(
+            "GET {url} failed with HTTP {status}."
+        )));
+    }
+
+    response
+        .text()
+        .await
+        .map_err(|error| LauncherError::new(format!("Failed to read {url}: {error}")))
+}
+
+async fn download_file(
+    client: &Client,
+    url: &str,
+    target: &Path,
+    expected_sha1: Option<&str>,
+    expected_size: Option<u64>,
+    executable: bool,
+    referer: Option<&str>,
+) -> LauncherResult<DownloadOutcome> {
+    if file_matches(target, expected_sha1, expected_size)? {
+        set_executable_if_needed(target, executable)?;
+        return Ok(DownloadOutcome::Reused);
+    }
+
+    if let Some(parent_dir) = target.parent() {
+        fs::create_dir_all(parent_dir)?;
+    }
+
+    let mut request = client.get(url);
+    if let Some(referer) = referer {
+        request = request.header(header::REFERER, referer);
+    }
+
+    let response = request
+        .send()
+        .await
+        .map_err(|error| LauncherError::new(format!("Failed to download {url}: {error}")))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(LauncherError::new(format!(
+            "Download {url} failed with HTTP {status}."
+        )));
+    }
+
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| LauncherError::new(format!("Failed to read {url}: {error}")))?;
+    validate_bytes(&bytes, expected_sha1, expected_size, url)?;
+
+    let temp_path = part_path_for(target);
+    fs::write(&temp_path, &bytes)?;
+    set_executable_if_needed(&temp_path, executable)?;
+    fs::rename(&temp_path, target)?;
+
+    Ok(DownloadOutcome::Downloaded)
+}
+
+fn file_matches(
+    target: &Path,
+    expected_sha1: Option<&str>,
+    expected_size: Option<u64>,
+) -> LauncherResult<bool> {
+    if !target.is_file() {
+        return Ok(false);
+    }
+
+    if expected_sha1.is_none() && expected_size.is_none() {
+        return Ok(fs::metadata(target)?.len() > 0);
+    }
+
+    if let Some(expected_size) = expected_size {
+        let actual_size = fs::metadata(target)?.len();
+        if actual_size != expected_size {
+            return Ok(false);
+        }
+    }
+
+    if let Some(expected_sha1) = expected_sha1 {
+        let bytes = fs::read(target)?;
+        if sha1_hex(&bytes) != expected_sha1 {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+fn validate_bytes(
+    bytes: &[u8],
+    expected_sha1: Option<&str>,
+    expected_size: Option<u64>,
+    url: &str,
+) -> LauncherResult<()> {
+    if let Some(expected_size) = expected_size {
+        if bytes.len() as u64 != expected_size {
+            return Err(LauncherError::new(format!(
+                "Downloaded size mismatch for {url}: expected {expected_size}, got {}.",
+                bytes.len()
+            )));
+        }
+    }
+
+    if let Some(expected_sha1) = expected_sha1 {
+        let actual_sha1 = sha1_hex(bytes);
+        if actual_sha1 != expected_sha1 {
+            return Err(LauncherError::new(format!(
+                "Downloaded SHA-1 mismatch for {url}: expected {expected_sha1}, got {actual_sha1}."
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn part_path_for(target: &Path) -> PathBuf {
+    let file_name = target
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_else(|| "download".into());
+    target.with_file_name(format!(".{file_name}.part"))
+}
+
+fn safe_join(base: &Path, relative: &str) -> LauncherResult<PathBuf> {
+    let relative_path = Path::new(relative);
+    if relative_path.is_absolute() {
+        return Err(LauncherError::new(format!(
+            "Refusing to write absolute path from manifest: {relative}"
+        )));
+    }
+
+    for component in relative_path.components() {
+        if matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        ) {
+            return Err(LauncherError::new(format!(
+                "Refusing unsafe manifest path: {relative}"
+            )));
+        }
+    }
+
+    Ok(base.join(relative_path))
+}
+
+fn should_emit_progress(current: u32, total: u32) -> bool {
+    current == total || current == 1 || current % 25 == 0
+}
+
+fn java_runtime_platform_key() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("windows", "x86_64") => Some("windows-x64"),
+        ("windows", "x86") => Some("windows-x86"),
+        ("windows", "aarch64") => Some("windows-arm64"),
+        ("macos", "aarch64") => Some("mac-os-arm64"),
+        ("macos", _) => Some("mac-os"),
+        ("linux", "x86") => Some("linux-i386"),
+        ("linux", "x86_64") => Some("linux"),
+        _ => None,
+    }
+}
+
+fn create_runtime_link(runtime_root: &Path, path: &str, target: &str) -> LauncherResult<()> {
+    let link_path = safe_join(runtime_root, path)?;
+    if let Some(parent_dir) = link_path.parent() {
+        fs::create_dir_all(parent_dir)?;
+    }
+
+    if link_path.exists() {
+        return Ok(());
+    }
+
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link_path)?;
+    }
+
+    #[cfg(windows)]
+    {
+        let target_path = link_path
+            .parent()
+            .map(|parent| parent.join(target))
+            .unwrap_or_else(|| PathBuf::from(target));
+        if target_path.is_file() {
+            fs::copy(target_path, link_path)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn set_executable_if_needed(path: &Path, executable: bool) -> LauncherResult<()> {
+    if !executable {
+        return Ok(());
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = fs::metadata(path)?.permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions)?;
+    }
+
+    Ok(())
+}
+
+fn extract_optifine_download_path(html: &str, file_name: &str) -> LauncherResult<String> {
+    let pattern = Regex::new(r#"href=['"]([^'"]*downloadx\?f=([^'"]+))['"]"#)
+        .expect("OptiFine download regex should compile");
+
+    for captures in pattern.captures_iter(html) {
+        let Some(path_match) = captures.get(1) else {
+            continue;
+        };
+        let path = path_match.as_str().replace("&amp;", "&");
+        if path.contains(file_name) {
+            return Ok(path);
+        }
+    }
+
+    Err(LauncherError::new(format!(
+        "Could not find the official OptiFine mirror link for {file_name}."
+    )))
+}
+
+fn resolve_installer_java() -> LauncherResult<PathBuf> {
+    let java = PathBuf::from(if cfg!(windows) { "java.exe" } else { "java" });
+    if detect_java_major(&java).is_some() {
+        return Ok(java);
+    }
+
+    Err(LauncherError::new(
+        "Java was not found in PATH. Install Java from the dependency panel first.",
+    ))
+}
+
+fn detect_java_major(java_executable: &Path) -> Option<u32> {
+    let output = Command::new(java_executable)
+        .arg("-version")
+        .output()
+        .ok()?;
+    let combined_output = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let version_pattern =
+        Regex::new(r#"version "(?:1\.)?(\d+)"#).expect("java version regex should be valid");
+    let captures = version_pattern.captures(&combined_output)?;
+    captures.get(1)?.as_str().parse::<u32>().ok()
+}
+
+#[allow(dead_code)]
+fn find_runtime_java(runtime_root: &Path) -> Option<PathBuf> {
+    let executable_name = if cfg!(windows) { "java.exe" } else { "java" };
+
+    WalkDir::new(runtime_root)
+        .into_iter()
+        .filter_map(Result::ok)
+        .find_map(|entry| {
+            if entry.file_type().is_file() && entry.file_name() == executable_name {
+                return Some(entry.into_path());
+            }
+
+            None
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, fs};
+
+    use crate::launcher::rules::RuntimeEnvironment;
+
+    use super::{
+        collect_required_libraries, extract_optifine_download_path, maven_artifact_path,
+        optifine_install_options, safe_join, DownloadArtifact, GameLibrary, LibraryDownloads,
+        OPTIFINE_OPTIONS,
+    };
+    use tempfile::tempdir;
+
+    #[test]
+    fn catalog_exposes_requested_optifine_versions() {
+        let options = optifine_install_options();
+        let ids = options
+            .iter()
+            .map(|option| option.version_id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            ids,
+            vec![
+                "1.8.9-OptiFine_HD_U_M5",
+                "1.16.5-OptiFine_HD_U_G8",
+                "1.21.11-OptiFine_HD_U_J9"
+            ]
+        );
+        assert_eq!(OPTIFINE_OPTIONS[2].minecraft_version, "1.21.11");
+    }
+
+    #[test]
+    fn extracts_official_optifine_mirror_path() {
+        let html = r#"<a href='downloadx?f=OptiFine_1.16.5_HD_U_G8.jar&amp;x=abc'>Download</a>"#;
+        let path = extract_optifine_download_path(html, "OptiFine_1.16.5_HD_U_G8.jar")
+            .expect("path should parse");
+
+        assert_eq!(path, "downloadx?f=OptiFine_1.16.5_HD_U_G8.jar&x=abc");
+    }
+
+    #[test]
+    fn builds_maven_artifact_paths() {
+        assert_eq!(
+            maven_artifact_path("net.minecraft:launchwrapper:1.12", None),
+            Some("net/minecraft/launchwrapper/1.12/launchwrapper-1.12.jar".to_string())
+        );
+        assert_eq!(
+            maven_artifact_path("org.lwjgl.lwjgl:lwjgl-platform:2.9.4", Some("natives-linux")),
+            Some(
+                "org/lwjgl/lwjgl/lwjgl-platform/2.9.4/lwjgl-platform-2.9.4-natives-linux.jar"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn required_libraries_skip_native_only_base_artifact() {
+        let mut classifiers = HashMap::new();
+        classifiers.insert(
+            "natives-linux".to_string(),
+            DownloadArtifact {
+                path: Some(
+                    "net/java/jinput/jinput-platform/2.0.5/jinput-platform-2.0.5-natives-linux.jar"
+                        .to_string(),
+                ),
+                sha1: None,
+                size: None,
+                url: "https://libraries.minecraft.net/net/java/jinput/jinput-platform/2.0.5/jinput-platform-2.0.5-natives-linux.jar"
+                    .to_string(),
+            },
+        );
+
+        let mut natives = HashMap::new();
+        natives.insert("linux".to_string(), "natives-linux".to_string());
+
+        let environment = RuntimeEnvironment {
+            os_name: "linux".to_string(),
+            os_arch: "x86_64".to_string(),
+            arch_bits: "64".to_string(),
+            os_version: None,
+            features: HashMap::new(),
+        };
+
+        let artifacts = collect_required_libraries(
+            &environment,
+            &[GameLibrary {
+                name: Some("net.java.jinput:jinput-platform:2.0.5".to_string()),
+                url: None,
+                downloads: Some(LibraryDownloads {
+                    artifact: None,
+                    classifiers,
+                }),
+                natives,
+                rules: Vec::new(),
+            }],
+        )
+        .expect("libraries should resolve");
+
+        assert_eq!(artifacts.len(), 1);
+        assert!(artifacts[0]
+            .path
+            .as_ref()
+            .expect("path should exist")
+            .ends_with("jinput-platform-2.0.5-natives-linux.jar"));
+    }
+
+    #[test]
+    fn ensure_launcher_profiles_json_creates_minimal_profile_file() {
+        let temp_dir = tempdir().expect("tempdir should be created");
+
+        super::ensure_launcher_profiles_json(temp_dir.path())
+            .expect("launcher profiles should be created");
+
+        let profile_path = temp_dir.path().join("launcher_profiles.json");
+        let contents = fs::read_to_string(profile_path).expect("profile file should be readable");
+        let parsed = serde_json::from_str::<serde_json::Value>(&contents)
+            .expect("profile file should be valid JSON");
+
+        assert!(parsed
+            .get("profiles")
+            .and_then(|profiles| profiles.as_object())
+            .is_some());
+    }
+
+    #[test]
+    fn installer_output_details_is_bounded_to_tail() {
+        let temp_dir = tempdir().expect("tempdir should be created");
+        let stdout_path = temp_dir.path().join("stdout.log");
+        let stderr_path = temp_dir.path().join("stderr.log");
+        let stdout = (0..120)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&stdout_path, stdout).expect("stdout should be written");
+        fs::write(&stderr_path, "root cause").expect("stderr should be written");
+
+        let details = super::installer_output_details(&stdout_path, &stderr_path);
+
+        assert!(details.contains("last 80 lines"));
+        assert!(!details.contains("line 0"));
+        assert!(details.contains("line 119"));
+        assert!(details.contains("root cause"));
+    }
+
+    #[test]
+    fn safe_join_rejects_path_traversal() {
+        assert!(safe_join(std::path::Path::new("/tmp/root"), "../escape").is_err());
+        assert!(safe_join(std::path::Path::new("/tmp/root"), "libraries/demo.jar").is_ok());
+    }
+}

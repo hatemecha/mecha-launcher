@@ -1,0 +1,12 @@
+# Allows creating the versions directory inside a selected .minecraft folder.
+
+[[permission]]
+identifier = "allow-ensure-versions-dir"
+description = "Enables the ensure_versions_dir command without any pre-configured scope."
+commands.allow = ["ensure_versions_dir"]
+
+[[permission]]
+identifier = "deny-ensure-versions-dir"
+description = "Denies the ensure_versions_dir command without any pre-configured scope."
+commands.deny = ["ensure_versions_dir"]
+

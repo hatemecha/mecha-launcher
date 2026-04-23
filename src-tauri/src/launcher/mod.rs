@@ -1,6 +1,7 @@
 pub mod classpath;
 pub mod discovery;
 mod hash;
+pub mod install;
 pub mod java;
 pub mod manifest;
 pub mod natives;
@@ -10,6 +11,7 @@ pub mod rules;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use serde::{Deserialize, Serialize};
@@ -162,6 +164,58 @@ impl LaunchPlan {
     }
 }
 
+fn is_command_available(command: &str) -> bool {
+    let locator = if cfg!(windows) { "where" } else { "which" };
+    Command::new(locator)
+        .arg(command)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn manifest_needs_legacy_lwjgl_linux_graphics(manifest: &ResolvedManifest) -> bool {
+    if !cfg!(target_os = "linux") {
+        return false;
+    }
+
+    manifest.libraries.iter().any(|library| {
+        library
+            .name
+            .as_deref()
+            .map(|name| {
+                name.starts_with("org.lwjgl.lwjgl:lwjgl:2.")
+            })
+            .unwrap_or(false)
+    })
+}
+
+fn validate_legacy_lwjgl_linux_graphics(manifest: &ResolvedManifest) -> LauncherResult<()> {
+    if !manifest_needs_legacy_lwjgl_linux_graphics(manifest) {
+        return Ok(());
+    }
+
+    if !is_command_available("xrandr") {
+        return Err(LauncherError::new(
+            "Falta compatibilidad grafica Linux para Minecraft antiguo: LWJGL 2 necesita xrandr. Instalalo desde el panel de Dependencias y volve a jugar.",
+        ));
+    }
+
+    let output = Command::new("xrandr").arg("-q").output().map_err(|error| {
+        LauncherError::new(format!(
+            "No se pudo ejecutar xrandr para validar la pantalla: {error}"
+        ))
+    })?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    if !output.status.success() || !stdout.contains(" connected") {
+        return Err(LauncherError::new(
+            "xrandr esta instalado pero no devolvio pantallas conectadas. Minecraft 1.8.9/LWJGL 2 suele crashear asi; inicia sesion con X11/XWayland disponible o revisa tu configuracion de pantalla.",
+        ));
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct LaunchVariables {
     values: HashMap<String, String>,
@@ -279,6 +333,7 @@ pub fn prepare_launch(request: &LaunchRequest, launch_id: String) -> LauncherRes
 
     let artifact_paths = resolve_version_artifact_paths(&minecraft_dir, &request.version_id)?;
     let manifest = load_merged_manifest(&minecraft_dir, &request.version_id)?;
+    validate_legacy_lwjgl_linux_graphics(&manifest)?;
 
     let asset_index_path = resolve_asset_index_path(&minecraft_dir, &manifest)?;
     if !asset_index_path.exists() {

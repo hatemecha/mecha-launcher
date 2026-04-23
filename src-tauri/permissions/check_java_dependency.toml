@@ -1,0 +1,12 @@
+# Allows checking system dependencies such as Java.
+
+[[permission]]
+identifier = "allow-check-java-dependency"
+description = "Enables the check_java_dependency command without any pre-configured scope."
+commands.allow = ["check_java_dependency"]
+
+[[permission]]
+identifier = "deny-check-java-dependency"
+description = "Denies the check_java_dependency command without any pre-configured scope."
+commands.deny = ["check_java_dependency"]
+

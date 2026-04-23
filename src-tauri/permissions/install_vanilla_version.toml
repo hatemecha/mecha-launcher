@@ -1,0 +1,12 @@
+# Allows installing a vanilla Minecraft release version into the selected .minecraft directory.
+
+[[permission]]
+identifier = "allow-install-vanilla-version"
+description = "Enables the install_vanilla_version command."
+commands.allow = ["install_vanilla_version"]
+
+[[permission]]
+identifier = "deny-install-vanilla-version"
+description = "Denies the install_vanilla_version command."
+commands.deny = ["install_vanilla_version"]
+

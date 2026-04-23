@@ -1,0 +1,11 @@
+# Allows installing xrandr for Linux legacy Minecraft compatibility.
+
+[[permission]]
+identifier = "allow-auto-install-graphics-dependency"
+description = "Enables the auto_install_graphics_dependency command."
+commands.allow = ["auto_install_graphics_dependency"]
+
+[[permission]]
+identifier = "deny-auto-install-graphics-dependency"
+description = "Denies the auto_install_graphics_dependency command."
+commands.deny = ["auto_install_graphics_dependency"]

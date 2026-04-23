@@ -1,0 +1,11 @@
+# Allows downloading and installing curated OptiFine versions into the selected .minecraft folder.
+
+[[permission]]
+identifier = "allow-install-optifine-version"
+description = "Enables the install_optifine_version command for curated OptiFine installs."
+commands.allow = ["install_optifine_version"]
+
+[[permission]]
+identifier = "deny-install-optifine-version"
+description = "Denies the install_optifine_version command."
+commands.deny = ["install_optifine_version"]

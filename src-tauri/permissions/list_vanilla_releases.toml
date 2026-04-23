@@ -1,0 +1,12 @@
+# Allows listing Mojang vanilla release versions for download.
+
+[[permission]]
+identifier = "allow-list-vanilla-releases"
+description = "Enables the list_vanilla_releases command."
+commands.allow = ["list_vanilla_releases"]
+
+[[permission]]
+identifier = "deny-list-vanilla-releases"
+description = "Denies the list_vanilla_releases command."
+commands.deny = ["list_vanilla_releases"]
+

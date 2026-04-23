@@ -1,0 +1,11 @@
+# Allows reading the curated OptiFine install catalog.
+
+[[permission]]
+identifier = "allow-list-optifine-install-options"
+description = "Enables the list_optifine_install_options command."
+commands.allow = ["list_optifine_install_options"]
+
+[[permission]]
+identifier = "deny-list-optifine-install-options"
+description = "Denies the list_optifine_install_options command."
+commands.deny = ["list_optifine_install_options"]

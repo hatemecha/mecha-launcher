@@ -1,0 +1,11 @@
+# Allows checking Linux graphics compatibility dependencies for legacy Minecraft.
+
+[[permission]]
+identifier = "allow-check-graphics-dependency"
+description = "Enables the check_graphics_dependency command."
+commands.allow = ["check_graphics_dependency"]
+
+[[permission]]
+identifier = "deny-check-graphics-dependency"
+description = "Denies the check_graphics_dependency command."
+commands.deny = ["check_graphics_dependency"]
