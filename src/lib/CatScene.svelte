@@ -18,6 +18,7 @@
   type ThemeMode = "light" | "dark";
 
   export let themeMode: ThemeMode = "dark";
+  export let sceneAriaLabel = "";
 
   let container: HTMLDivElement | null = null;
   let three: typeof import("three") | null = null;
@@ -38,7 +39,6 @@
   let lastFrameTime = 0;
 
   $: modelUrl = themeMode === "light" ? blackCatModelUrl : whiteCatModelUrl;
-  $: modelLabel = themeMode === "light" ? "Black cat" : "White cat";
 
   $: if (isMounted && modelUrl !== currentModelUrl) {
     void loadModel(modelUrl);
@@ -325,10 +325,6 @@
   });
 </script>
 
-<div class="cat-scene" aria-label={`${modelLabel} rotating preview`}>
+<div class="cat-scene" aria-label={sceneAriaLabel || "Preview"}>
   <div bind:this={container} class="cat-canvas"></div>
-  <div class="cat-meta">
-    <span>{modelLabel}</span>
-    <span>Theme inverse model</span>
-  </div>
 </div>

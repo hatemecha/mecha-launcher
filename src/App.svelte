@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
 
+  import brandMarkUrl from "../hatecreeper2.png?url";
+
   import {
     browseMinecraftDir,
     detectDefaultMinecraftDir,
@@ -17,6 +19,15 @@
     storeSelectedVersionId
   } from "./lib/storage";
   import CatScene from "./lib/CatScene.svelte";
+  import {
+    applyDocumentLang,
+    fillTemplate,
+    persistLocale,
+    readStoredLocale,
+    translate,
+    type Locale,
+    type MessageKey
+  } from "./lib/i18n";
   import type {
     LauncherLogEvent,
     LauncherStatusEvent,
@@ -25,6 +36,8 @@
 
   const FIXED_USERNAME = "Player";
   const THEME_STORAGE_KEY = "mecha-launcher.themeMode";
+
+  let locale: Locale = readStoredLocale();
 
   type LogLine = {
     launchId: string;
@@ -39,13 +52,25 @@
   let versions: MinecraftVersionSummary[] = [];
   let selectedVersionId = "";
   let errorMessage = "";
-  let statusMessage = "Waiting for a valid .minecraft directory.";
+  let statusMessage = translate(locale, "statusWaitingDir");
   let isLoadingVersions = false;
   let isLaunching = false;
   let activeLaunchId: string | null = null;
   let logLines: LogLine[] = [];
   let logViewport: HTMLDivElement | null = null;
   let themeMode: ThemeMode = "dark";
+
+  $: t = (key: MessageKey) => translate(locale, key);
+
+  function setLocale(next: Locale): void {
+    if (next === locale) {
+      return;
+    }
+
+    locale = next;
+    persistLocale(next);
+    applyDocumentLang(next);
+  }
 
   async function appendLog(source: LogLine["source"], line: string, launchId = "system") {
     logLines = [...logLines, { source, line, launchId }];
@@ -134,8 +159,8 @@
     if (!trimmedDir) {
       versions = [];
       selectedVersionId = "";
-      errorMessage = "Set a .minecraft directory before reloading versions.";
-      statusMessage = "Waiting for a valid .minecraft directory.";
+      errorMessage = translate(locale, "errSetDirBeforeReload");
+      statusMessage = translate(locale, "statusWaitingDir");
       isLoadingVersions = false;
       return;
     }
@@ -148,18 +173,25 @@
       syncSelectedVersion(nextVersions);
 
       if (nextVersions.length === 0) {
-        statusMessage = "No local versions were found in the selected directory.";
+        statusMessage = translate(locale, "statusNoVersionsInDir");
+      } else if (nextVersions.length === 1) {
+        statusMessage = translate(locale, "versionsReadyOne");
       } else {
-        statusMessage = `${nextVersions.length} installed version${nextVersions.length === 1 ? "" : "s"} ready.`;
+        statusMessage = fillTemplate(translate(locale, "versionsReadyMany"), {
+          count: nextVersions.length
+        });
       }
 
-      await appendLog("system", `Reloaded versions from ${trimmedDir}`);
+      await appendLog(
+        "system",
+        fillTemplate(translate(locale, "logReloadedVersions"), { path: trimmedDir })
+      );
     } catch (error) {
       versions = [];
       selectedVersionId = "";
       clearSelectedVersionId();
-      errorMessage = getErrorMessage(error, "Failed to read installed versions.");
-      statusMessage = "The selected directory could not be used.";
+      errorMessage = getErrorMessage(error, translate(locale, "errReadVersions"));
+      statusMessage = translate(locale, "statusDirInvalid");
       await appendLog("system", errorMessage);
     } finally {
       isLoadingVersions = false;
@@ -176,7 +208,7 @@
       minecraftDir = pickedPath;
       await refreshVersions();
     } catch (error) {
-      errorMessage = getErrorMessage(error, "The folder picker failed.");
+      errorMessage = getErrorMessage(error, translate(locale, "errFolderPicker"));
       await appendLog("system", errorMessage);
     }
   }
@@ -197,10 +229,14 @@
 
       activeLaunchId = response.launchId;
       isLaunching = true;
-      statusMessage = "Preparing launch plan.";
-      await appendLog("system", `Launch requested for ${selectedVersionId}`, response.launchId);
+      statusMessage = translate(locale, "statusPreparingLaunch");
+      await appendLog(
+        "system",
+        fillTemplate(translate(locale, "logLaunchRequested"), { id: selectedVersionId }),
+        response.launchId
+      );
     } catch (error) {
-      errorMessage = getErrorMessage(error, "Failed to start Minecraft.");
+      errorMessage = getErrorMessage(error, translate(locale, "errFailedLaunch"));
       await appendLog("system", errorMessage);
     }
   }
@@ -219,10 +255,11 @@
     activeLaunchId = event.launchId;
 
     if (event.state === "error") {
-      errorMessage = event.message ?? "Launch failed.";
+      errorMessage = event.message ?? translate(locale, "errLaunchFailed");
     }
 
-    statusMessage = event.message ?? `Launch state: ${event.state}`;
+    statusMessage =
+      event.message ?? fillTemplate(translate(locale, "launchState"), { state: event.state });
   }
 
   async function handleLog(event: LauncherLogEvent): Promise<void> {
@@ -236,11 +273,11 @@
   function formatSourceLabel(source: LogLine["source"]): string {
     switch (source) {
       case "stderr":
-        return "ERR";
+        return t("logSourceErr");
       case "stdout":
-        return "OUT";
+        return t("logSourceOut");
       default:
-        return "SYS";
+        return t("logSourceSys");
     }
   }
 
@@ -282,7 +319,7 @@
           await refreshVersions();
         }
       } catch (error) {
-        errorMessage = getErrorMessage(error, "Failed to initialize launcher.");
+        errorMessage = getErrorMessage(error, translate(locale, "errInitLauncher"));
         await appendLog("system", errorMessage);
       }
     })();
@@ -296,7 +333,7 @@
 </script>
 
 <svelte:head>
-  <title>Mecha Launcher</title>
+  <title>{t("appTitle")}</title>
 </svelte:head>
 
 <svg class="icon-sprite" aria-hidden="true" focusable="false">
@@ -362,24 +399,31 @@
 <div class="app-shell">
   <header class="header-bar">
     <div class="brand-lockup">
-      <span class="logo">MECHA LAUNCHER</span>
-      <span class="beta-tag">LOCAL</span>
+      <img
+        class="brand-mark"
+        src={brandMarkUrl}
+        alt=""
+        width="26"
+        height="26"
+        decoding="async"
+      />
+      <span class="logo">MECHA <span class="logo-accent">LAUNCHER</span></span>
     </div>
 
     <button
       class="header-chip theme-toggle"
       type="button"
       on:click={toggleThemeMode}
-      aria-label={themeMode === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+      aria-label={themeMode === "dark" ? t("themeAriaDark") : t("themeAriaLight")}
       aria-pressed={themeMode === "dark"}
     >
       <svg class="app-icon" aria-hidden="true"><use href="#icon-theme" /></svg>
-      <span>{themeMode === "dark" ? "Dark" : "Light"}</span>
+      <span>{themeMode === "dark" ? t("themeDark") : t("themeLight")}</span>
     </button>
 
     <div class:active={isLaunching} class="status-indicator" role="status" aria-live="polite">
       <svg class="app-icon status-dot" aria-hidden="true"><use href="#icon-status" /></svg>
-      {isLaunching ? "RUNNING" : "IDLE"}
+      {isLaunching ? t("statusRunning") : t("statusIdle")}
     </div>
   </header>
 
@@ -388,8 +432,11 @@
       <section class="launch-stage" aria-labelledby="launcher-title">
         <div class="stage-header">
           <div>
-            <p class="kicker">Minecraft Offline Launcher</p>
-            <h1 id="launcher-title">Local Launch Panel</h1>
+            <h1 id="launcher-title" class="stage-title-lockup">
+              <img class="stage-brand-mark" src={brandMarkUrl} alt="" decoding="async" />
+              <span class="stage-title-wordmark">MECHA <span class="logo-accent">LAUNCHER</span></span>
+            </h1>
+            <p class="kicker">{t("kicker")}</p>
           </div>
           <div class="stage-badge">
             <svg class="app-icon" aria-hidden="true"><use href="#icon-user" /></svg>
@@ -397,43 +444,38 @@
           </div>
         </div>
 
-        <p class="stage-copy">
-          Point the launcher at an existing <code>.minecraft</code> folder, choose a local
-          version, and stream the Rust launch output without extra accounts or downloads.
-        </p>
-
-        <div class="run-summary" aria-label="Launch summary">
+        <div class="run-summary" aria-label={t("runSummaryAria")}>
           <div>
-            <span>Version</span>
+            <span>{t("runVersion")}</span>
             <strong>{selectedVersionId || "—"}</strong>
           </div>
           <div>
-            <span>Installed</span>
+            <span>{t("runInstalled")}</span>
             <strong>{versions.length}</strong>
           </div>
           <div>
-            <span>State</span>
-            <strong>{isLaunching ? "Launching" : "Ready"}</strong>
+            <span>{t("runState")}</span>
+            <strong>{isLaunching ? t("stateLaunching") : t("stateReady")}</strong>
           </div>
         </div>
 
         <div class="stage-content split-stage">
-          <section class="stage-pane cat-pane" aria-label="Rotating cat model">
-            <div class="pane-title">
+          <section class="stage-pane cat-pane" aria-label={t("panePreviewSr")}>
+            <div class="pane-title pane-title-icon" title={t("panePreviewTitle")}>
               <svg class="app-icon" aria-hidden="true"><use href="#icon-cat" /></svg>
-              Cat Model
+              <span class="sr-only">{t("panePreviewSr")}</span>
             </div>
-            <CatScene {themeMode} />
+            <CatScene {themeMode} sceneAriaLabel={t("catSceneAria")} />
           </section>
 
-          <section class="stage-pane log-pane" aria-label="Runtime output">
-            <div class="pane-title">
+          <section class="stage-pane log-pane" aria-label={t("paneOutputSr")}>
+            <div class="pane-title pane-title-icon" title={t("paneOutputTitle")}>
               <svg class="app-icon" aria-hidden="true"><use href="#icon-terminal" /></svg>
-              Runtime Log
+              <span class="sr-only">{t("paneOutputSr")}</span>
             </div>
             <div bind:this={logViewport} class="log-console" role="log" aria-live="polite">
               {#if logLines.length === 0}
-                <p class="log-placeholder">Launch events and process output will appear here.</p>
+                <p class="log-placeholder">{t("logPlaceholder")}</p>
               {:else}
                 {#each logLines as entry}
                   <div class="log-line">
@@ -448,41 +490,41 @@
       </section>
 
       <div class="preview-status-bar">
-        <span>{selectedVersionId || "No version selected"}</span>
+        <span>{selectedVersionId || t("noVersionSelected")}</span>
         <span>{statusMessage}</span>
-        <span>{minecraftDir.trim() || ".minecraft not set"}</span>
+        <span>{minecraftDir.trim() || t("mcDirNotSet")}</span>
       </div>
     </main>
 
-    <aside class="control-panel" aria-label="Launcher controls">
+    <aside class="control-panel" aria-label={t("controlsAria")}>
       <section class="panel-section">
         <div class="section-title accent">
           <svg class="app-icon" aria-hidden="true"><use href="#icon-folder" /></svg>
-          Game Directory
+          {t("gameDirectory")}
         </div>
-        <p class="help-text">Select the local <code>.minecraft</code> directory that already contains installed versions.</p>
+        <p class="help-text">{@html t("gameDirectoryHelp")}</p>
 
         <input
           bind:value={minecraftDir}
           class="text-input"
           type="text"
-          placeholder="C:\\Users\\you\\AppData\\Roaming\\.minecraft"
-          aria-label="Minecraft directory"
+          placeholder={t("mcPathPlaceholder")}
+          aria-label={t("minecraftDirAria")}
         />
 
         <div class="btn-row">
           <button class="btn" type="button" on:click={handleBrowse}>
             <svg class="app-icon" aria-hidden="true"><use href="#icon-folder" /></svg>
-            Browse
+            {t("browse")}
           </button>
           <button class="btn" type="button" on:click={refreshVersions} disabled={isLoadingVersions}>
             <svg class="app-icon" aria-hidden="true"><use href="#icon-refresh" /></svg>
-            {isLoadingVersions ? "Reloading" : "Reload"}
+            {isLoadingVersions ? t("reloading") : t("reload")}
           </button>
         </div>
 
         {#if detectedMinecraftDir}
-          <p class="hint">Detected default: {detectedMinecraftDir}</p>
+          <p class="hint">{t("detectedDefault")} {detectedMinecraftDir}</p>
         {/if}
 
         {#if errorMessage}
@@ -495,14 +537,14 @@
       <section class="panel-section versions-section">
         <div class="section-title accent">
           <svg class="app-icon" aria-hidden="true"><use href="#icon-list" /></svg>
-          Installed Versions
+          {t("installedVersions")}
         </div>
 
-        <div class="version-list" role="list" aria-label="Minecraft versions">
+        <div class="version-list" role="list" aria-label={t("versionsListAria")}>
           {#if versions.length === 0}
             <div class="empty-state">
-              <p>No valid local versions found yet.</p>
-              <span>Each version must include matching <code>.json</code> and <code>.jar</code> files.</span>
+              <p>{t("versionsEmptyTitle")}</p>
+              <span>{@html t("versionsEmptyDetail")}</span>
             </div>
           {:else}
             {#each versions as version}
@@ -519,7 +561,7 @@
                   {:else if version.javaComponent}
                     {version.javaComponent}
                   {:else}
-                    Runtime auto
+                    {t("runtimeAuto")}
                   {/if}
                 </span>
               </button>
@@ -529,29 +571,30 @@
 
         <button class:active={canPlay} class="btn primary play-button" type="button" on:click={handlePlay} disabled={!canPlay}>
           <svg class="app-icon" aria-hidden="true"><use href="#icon-play" /></svg>
-          {isLaunching ? "Launching" : "Play"}
+          {isLaunching ? t("launching") : t("play")}
         </button>
       </section>
 
-      <section class="panel-section">
-        <div class="section-title">
-          <svg class="app-icon" aria-hidden="true"><use href="#icon-terminal" /></svg>
-          Runtime Output
-        </div>
-        <p class="help-text">The main panel shows system messages, stdout, and stderr from the active launch.</p>
-
-        <div class="session-grid">
-          <div>
-            <span>Username</span>
-            <strong>{FIXED_USERNAME}</strong>
-          </div>
-          <div>
-            <span>Mode</span>
-            <strong>{themeMode}</strong>
-          </div>
-          <div>
-            <span>Backend</span>
-            <strong>Tauri</strong>
+      <section class="panel-section panel-lang">
+        <div class="lang-row">
+          <span class="lang-label">{t("languageLabel")}</span>
+          <div class="lang-toggle" role="group" aria-label={t("languageLabel")}>
+            <button
+              class:active={locale === "es"}
+              class="lang-btn"
+              type="button"
+              on:click={() => setLocale("es")}
+            >
+              {t("languageEs")}
+            </button>
+            <button
+              class:active={locale === "en"}
+              class="lang-btn"
+              type="button"
+              on:click={() => setLocale("en")}
+            >
+              {t("languageEn")}
+            </button>
           </div>
         </div>
       </section>
