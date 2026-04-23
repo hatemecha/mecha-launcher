@@ -16,6 +16,7 @@
     storeMinecraftDir,
     storeSelectedVersionId
   } from "./lib/storage";
+  import CatScene from "./lib/CatScene.svelte";
   import type {
     LauncherLogEvent,
     LauncherStatusEvent,
@@ -325,6 +326,13 @@
     <path d="m7 9 3 3-3 3" />
     <path d="M12 15h5" />
   </symbol>
+  <symbol id="icon-cat" viewBox="0 0 24 24">
+    <path d="M6 9V5l3 2h6l3-2v4" />
+    <path d="M5.5 10.5v4.2A4.3 4.3 0 0 0 9.8 19h4.4a4.3 4.3 0 0 0 4.3-4.3v-4.2" />
+    <path d="M9 12h.01" />
+    <path d="M15 12h.01" />
+    <path d="M11 15h2" />
+  </symbol>
   <symbol id="icon-user" viewBox="0 0 24 24">
     <path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z" />
     <path d="M4.5 20a7.5 7.5 0 0 1 15 0" />
@@ -409,17 +417,33 @@
           </div>
         </div>
 
-        <div bind:this={logViewport} class="log-console" role="log" aria-live="polite">
-          {#if logLines.length === 0}
-            <p class="log-placeholder">Launch events and process output will appear here.</p>
-          {:else}
-            {#each logLines as entry}
-              <div class="log-line">
-                <span class="log-source {entry.source}">{formatSourceLabel(entry.source)}</span>
-                <span class="log-message">{entry.line}</span>
-              </div>
-            {/each}
-          {/if}
+        <div class="stage-content split-stage">
+          <section class="stage-pane cat-pane" aria-label="Rotating cat model">
+            <div class="pane-title">
+              <svg class="app-icon" aria-hidden="true"><use href="#icon-cat" /></svg>
+              Cat Model
+            </div>
+            <CatScene {themeMode} />
+          </section>
+
+          <section class="stage-pane log-pane" aria-label="Runtime output">
+            <div class="pane-title">
+              <svg class="app-icon" aria-hidden="true"><use href="#icon-terminal" /></svg>
+              Runtime Log
+            </div>
+            <div bind:this={logViewport} class="log-console" role="log" aria-live="polite">
+              {#if logLines.length === 0}
+                <p class="log-placeholder">Launch events and process output will appear here.</p>
+              {:else}
+                {#each logLines as entry}
+                  <div class="log-line">
+                    <span class="log-source {entry.source}">{formatSourceLabel(entry.source)}</span>
+                    <span class="log-message">{entry.line}</span>
+                  </div>
+                {/each}
+              {/if}
+            </div>
+          </section>
         </div>
       </section>
 

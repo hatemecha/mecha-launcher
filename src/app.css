@@ -149,10 +149,10 @@ code {
 }
 
 .app-shell {
+  position: relative;
+  z-index: 1;
   min-height: 100vh;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 160px),
-    var(--bg);
+  background: var(--bg);
 }
 
 .header-bar {
@@ -234,6 +234,8 @@ code {
 }
 
 .app-container {
+  position: relative;
+  z-index: 1;
   display: flex;
   min-height: 100vh;
   padding-top: var(--header-h);
@@ -258,9 +260,7 @@ code {
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: var(--r);
-  background:
-    radial-gradient(circle at 12% 0%, var(--red-soft), transparent 28%),
-    linear-gradient(180deg, var(--bg-card), color-mix(in srgb, var(--bg-card), #000 15%));
+  background-color: var(--bg-card);
 }
 
 .stage-header {
@@ -353,15 +353,42 @@ h1 {
   white-space: nowrap;
 }
 
-.log-console {
-  min-height: 260px;
+.stage-content {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  min-height: 0;
   margin: 0 18px 18px;
+}
+
+.stage-pane {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+}
+
+.pane-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 2px;
+  color: var(--gray);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+}
+
+.log-console {
+  height: 100%;
+  min-height: 260px;
   overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
-  background:
-    linear-gradient(rgba(255, 255, 255, 0.018), transparent),
-    #050505;
+  background: #050505;
   color: #d8d8d8;
   font-family: var(--mono);
   scrollbar-color: var(--border-light) transparent;
@@ -421,6 +448,40 @@ h1 {
   min-width: 0;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.cat-scene {
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(260px, 1fr) auto;
+  min-height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background-color: color-mix(in srgb, var(--bg-panel), transparent 8%);
+}
+
+.cat-canvas {
+  min-height: clamp(280px, 48vh, 520px);
+}
+
+.cat-canvas canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.cat-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 9px;
+  border-top: 1px solid var(--border);
+  color: var(--gray-dim);
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
 }
 
 .preview-status-bar {
@@ -769,8 +830,8 @@ h1 {
 
   .stage-header,
   .run-summary,
-  .stage-copy,
-  .log-console {
+  .stage-content,
+  .stage-copy {
     margin-right: 10px;
     margin-left: 10px;
   }
@@ -783,6 +844,14 @@ h1 {
 
   .stage-copy {
     padding: 10px 0;
+  }
+
+  .cat-canvas {
+    min-height: 300px;
+  }
+
+  .stage-content {
+    grid-template-columns: 1fr;
   }
 
   h1 {
