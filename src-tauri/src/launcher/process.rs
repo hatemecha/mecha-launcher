@@ -59,7 +59,7 @@ pub fn run_launch(plan: LaunchPlan, sink: &dyn EventSink) -> LauncherResult<()> 
         .args(&plan.jvm_args)
         .arg(&plan.main_class)
         .args(&plan.game_args)
-        .current_dir(&plan.minecraft_dir)
+        .current_dir(&plan.game_directory)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 

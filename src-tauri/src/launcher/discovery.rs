@@ -6,7 +6,9 @@ use std::{
 use serde::Deserialize;
 
 use crate::launcher::{
-    manifest::{deserialize_optional_u32_from_number_or_string, ResolvedManifest},
+    manifest::{
+        deserialize_optional_u32_from_number_or_string, load_merged_manifest, ResolvedManifest,
+    },
     LauncherError, LauncherResult, MinecraftVersionSummary,
 };
 
@@ -22,6 +24,8 @@ pub struct VersionArtifactPaths {
 struct VersionMetadata {
     #[serde(default)]
     java_version: Option<JavaVersionMetadata>,
+    #[serde(default)]
+    mecha: Option<MechaMetadata>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -32,6 +36,15 @@ struct JavaVersionMetadata {
     #[serde(default)]
     #[serde(deserialize_with = "deserialize_optional_u32_from_number_or_string")]
     major_version: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MechaMetadata {
+    #[serde(default)]
+    game_directory: Option<String>,
+    #[serde(default)]
+    source_kind: Option<String>,
 }
 
 pub fn detect_default_minecraft_dir() -> Option<PathBuf> {
@@ -125,20 +138,41 @@ pub fn list_versions(minecraft_dir: &Path) -> LauncherResult<Vec<MinecraftVersio
         let metadata = fs::read_to_string(&artifacts.manifest_file)
             .ok()
             .and_then(|contents| serde_json::from_str::<VersionMetadata>(&contents).ok());
+        let merged_manifest = load_merged_manifest(minecraft_dir, &folder_name).ok();
 
         versions.push(MinecraftVersionSummary {
             id: folder_name.clone(),
             folder_name,
             jar_path: artifacts.version_jar.to_string_lossy().to_string(),
             manifest_path: artifacts.manifest_file.to_string_lossy().to_string(),
-            java_component: metadata
+            java_component: merged_manifest
                 .as_ref()
                 .and_then(|manifest| manifest.java_version.as_ref())
-                .and_then(|java_version| java_version.component.clone()),
-            java_major_version: metadata
+                .map(|java_version| java_version.component.clone())
+                .or_else(|| {
+                    metadata
+                        .as_ref()
+                        .and_then(|manifest| manifest.java_version.as_ref())
+                        .and_then(|java_version| java_version.component.clone())
+                }),
+            java_major_version: merged_manifest
                 .as_ref()
                 .and_then(|manifest| manifest.java_version.as_ref())
-                .and_then(|java_version| java_version.major_version),
+                .map(|java_version| java_version.major_version)
+                .or_else(|| {
+                    metadata
+                        .as_ref()
+                        .and_then(|manifest| manifest.java_version.as_ref())
+                        .and_then(|java_version| java_version.major_version)
+                }),
+            game_directory: metadata
+                .as_ref()
+                .and_then(|manifest| manifest.mecha.as_ref())
+                .and_then(|mecha| mecha.game_directory.clone()),
+            source_kind: metadata
+                .as_ref()
+                .and_then(|manifest| manifest.mecha.as_ref())
+                .and_then(|mecha| mecha.source_kind.clone()),
         });
     }
 
@@ -264,5 +298,57 @@ mod tests {
 
         assert_eq!(versions.len(), 1);
         assert_eq!(versions[0].java_major_version, Some(21));
+    }
+
+    #[test]
+    fn list_versions_uses_inherited_java_metadata_for_child_profiles() {
+        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+        let minecraft_dir = temp_dir.path().join(".minecraft");
+        let parent_dir = minecraft_dir.join("versions").join("1.16.5");
+        let child_dir = minecraft_dir.join("versions").join("1.16.5-redux");
+
+        fs::create_dir_all(&parent_dir).expect("parent dir should exist");
+        fs::create_dir_all(&child_dir).expect("child dir should exist");
+        fs::write(
+            parent_dir.join("1.16.5.json"),
+            r#"{
+              "id": "1.16.5",
+              "mainClass": "net.minecraft.client.main.Main",
+              "javaVersion": {
+                "component": "jre-legacy",
+                "majorVersion": 8
+              },
+              "arguments": {
+                "jvm": ["-cp", "${classpath}"],
+                "game": ["--version", "${version_name}"]
+              }
+            }"#,
+        )
+        .expect("parent manifest should be written");
+        fs::write(parent_dir.join("1.16.5.jar"), b"parent").expect("parent jar should be written");
+        fs::write(
+            child_dir.join("1.16.5-redux.json"),
+            r#"{
+              "id": "1.16.5-redux",
+              "inheritsFrom": "1.16.5",
+              "mainClass": "net.fabricmc.loader.impl.launch.knot.KnotClient",
+              "mecha": {
+                "sourceKind": "redux",
+                "gameDirectory": "/tmp/redux"
+              }
+            }"#,
+        )
+        .expect("child manifest should be written");
+        fs::write(child_dir.join("1.16.5-redux.jar"), b"child").expect("child jar should be written");
+
+        let versions = list_versions(&minecraft_dir).expect("versions should load");
+        let redux = versions
+            .iter()
+            .find(|version| version.id == "1.16.5-redux")
+            .expect("redux version should exist");
+
+        assert_eq!(redux.java_component.as_deref(), Some("jre-legacy"));
+        assert_eq!(redux.java_major_version, Some(8));
+        assert_eq!(redux.source_kind.as_deref(), Some("redux"));
     }
 }

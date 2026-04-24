@@ -1,16 +1,18 @@
 import type {
   MinecraftVersionSummary,
   OptifineInstallOption,
+  ReduxInstallOption,
   VanillaRelease
 } from "./types";
 
-export type CatalogKind = "vanilla" | "optifine" | "local";
+export type CatalogKind = "vanilla" | "optifine" | "redux" | "local";
 export type CatalogFilter =
   | "installed"
   | "all"
   | "popular"
   | "favorites"
   | "optifine"
+  | "redux"
   | "vanilla";
 export type CatalogKey = `${CatalogKind}:${string}`;
 
@@ -53,7 +55,8 @@ export function recommendedJavaMajorForMinecraft(version: string): number | null
 export function buildCatalogItems(
   installedVersions: MinecraftVersionSummary[],
   releases: VanillaRelease[],
-  optifineOptions: OptifineInstallOption[]
+  optifineOptions: OptifineInstallOption[],
+  reduxOptions: ReduxInstallOption[]
 ): CatalogItem[] {
   const installedById = new Map(installedVersions.map((version) => [version.id, version]));
   const items: CatalogItem[] = [];
@@ -87,6 +90,20 @@ export function buildCatalogItems(
     });
   }
 
+  for (const option of reduxOptions) {
+    const key: CatalogKey = `redux:${option.id}`;
+    items.push({
+      key,
+      id: option.id,
+      kind: "redux",
+      title: option.title,
+      subtitle: "Fabric · Redux",
+      installed: installedById.has(option.versionId),
+      installedVersionId: option.versionId,
+      requiredJavaMajor: option.recommendedJavaMajor
+    });
+  }
+
   for (const version of installedVersions) {
     const alreadyListed =
       items.some((item) => item.installedVersionId === version.id) ||
@@ -95,13 +112,14 @@ export function buildCatalogItems(
       continue;
     }
 
-    const key: CatalogKey = `local:${version.id}`;
+    const inferredKind: CatalogKind = version.sourceKind === "redux" ? "redux" : "local";
+    const key: CatalogKey = `${inferredKind}:${version.id}`;
     items.push({
       key,
       id: version.id,
-      kind: "local",
+      kind: inferredKind,
       title: `Minecraft ${version.id}`,
-      subtitle: "Local",
+      subtitle: inferredKind === "redux" ? "Fabric · Redux" : "Local",
       installed: true,
       installedVersionId: version.id,
       requiredJavaMajor: version.javaMajorVersion ?? null
@@ -120,7 +138,8 @@ export function filterCatalogItems(
   const kindRank: Record<CatalogKind, number> = {
     vanilla: 0,
     optifine: 1,
-    local: 2
+    redux: 2,
+    local: 3
   };
 
   return items
@@ -133,6 +152,8 @@ export function filterCatalogItems(
           return favoriteKeys.has(item.key);
         case "optifine":
           return item.kind === "optifine";
+        case "redux":
+          return item.kind === "redux";
         case "vanilla":
           return item.kind === "vanilla";
         case "popular":

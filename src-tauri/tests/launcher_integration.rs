@@ -82,6 +82,27 @@ fn prepare_launch_supports_modern_and_legacy_manifests() {
     write_runtime_java(&minecraft_dir, "java-runtime-delta");
     write_runtime_java(&minecraft_dir, "jre-legacy");
     write_library(&minecraft_dir, "com/example/demo/1.0.0/demo-1.0.0.jar");
+    write_version(
+        &minecraft_dir,
+        "1.16.5",
+        r#"{
+          "id":"1.16.5",
+          "mainClass":"net.minecraft.client.main.Main",
+          "assetIndex":{"id":"1.16"},
+          "javaVersion":{"component":"jre-legacy","majorVersion":8},
+          "arguments":{
+            "jvm":["-Djava.library.path=${natives_directory}","-cp","${classpath}"],
+            "game":["--version","${version_name}"]
+          },
+          "libraries":[
+            {
+              "name":"com.example:demo:1.0.0",
+              "downloads":{"artifact":{"path":"com/example/demo/1.0.0/demo-1.0.0.jar"}}
+            }
+          ]
+        }"#,
+        true,
+    );
 
     write_version(
         &minecraft_dir,
@@ -129,12 +150,17 @@ fn prepare_launch_supports_modern_and_legacy_manifests() {
             version_id: "modern".to_string(),
             username: "Player".to_string(),
             required_java_major: None,
+            max_memory_mb: None,
         },
         "modern-launch".to_string(),
     )
     .expect("modern plan should build");
 
     assert!(modern_plan.jvm_args.iter().any(|value| value == "-cp"));
+    assert!(modern_plan
+        .jvm_args
+        .iter()
+        .any(|value| value == "-Dminecraft.api.session.host=https://nope.invalid"));
     assert!(modern_plan
         .game_args
         .windows(2)
@@ -147,12 +173,17 @@ fn prepare_launch_supports_modern_and_legacy_manifests() {
             version_id: "legacy".to_string(),
             username: "Player".to_string(),
             required_java_major: None,
+            max_memory_mb: None,
         },
         "legacy-launch".to_string(),
     )
     .expect("legacy plan should build");
 
     assert!(legacy_plan.jvm_args.iter().any(|value| value == "-cp"));
+    assert!(legacy_plan
+        .jvm_args
+        .iter()
+        .any(|value| value == "-Dminecraft.api.services.host=https://nope.invalid"));
     assert!(legacy_plan
         .game_args
         .windows(2)
@@ -206,6 +237,7 @@ fn prepare_launch_supports_values_alias_and_offline_placeholders() {
             version_id: "modern-values".to_string(),
             username: "Player".to_string(),
             required_java_major: None,
+            max_memory_mb: None,
         },
         "modern-values-launch".to_string(),
     )
@@ -220,6 +252,86 @@ fn prepare_launch_supports_values_alias_and_offline_placeholders() {
         .game_args
         .windows(2)
         .any(|pair| pair == ["--xuid", "0"]));
+}
+
+#[test]
+fn prepare_launch_uses_redux_game_directory_when_manifest_declares_it() {
+    let temp_dir = tempdir().expect("tempdir should be created");
+    let minecraft_dir = create_minecraft_layout(temp_dir.path());
+    let game_dir = minecraft_dir.join("mecha-instances").join("1.16.5-redux");
+
+    write_asset_index(&minecraft_dir, "1.16");
+    write_runtime_java(&minecraft_dir, "jre-legacy");
+    write_library(&minecraft_dir, "com/example/demo/1.0.0/demo-1.0.0.jar");
+    write_version(
+        &minecraft_dir,
+        "1.16.5",
+        r#"{
+          "id":"1.16.5",
+          "mainClass":"net.minecraft.client.main.Main",
+          "assetIndex":{"id":"1.16"},
+          "javaVersion":{"component":"jre-legacy","majorVersion":8},
+          "arguments":{
+            "jvm":["-Djava.library.path=${natives_directory}","-cp","${classpath}"],
+            "game":["--version","${version_name}"]
+          },
+          "libraries":[
+            {
+              "name":"com.example:demo:1.0.0",
+              "downloads":{"artifact":{"path":"com/example/demo/1.0.0/demo-1.0.0.jar"}}
+            }
+          ]
+        }"#,
+        true,
+    );
+
+    write_version(
+        &minecraft_dir,
+        "1.16.5-redux",
+        &format!(
+            r#"{{
+              "id":"1.16.5-redux",
+              "inheritsFrom":"1.16.5",
+              "mainClass":"net.fabricmc.loader.impl.launch.knot.KnotClient",
+              "assetIndex":{{"id":"1.16"}},
+              "javaVersion":{{"component":"jre-legacy","majorVersion":8}},
+              "arguments":{{
+                "jvm":["-Djava.library.path=${{natives_directory}}","-cp","${{classpath}}"],
+                "game":["--gameDir","${{game_directory}}","--version","${{version_name}}"]
+              }},
+              "mecha":{{
+                "gameDirectory":"{}",
+                "sourceKind":"redux"
+              }},
+              "libraries":[
+                {{
+                  "name":"com.example:demo:1.0.0",
+                  "downloads":{{"artifact":{{"path":"com/example/demo/1.0.0/demo-1.0.0.jar"}}}}
+                }}
+              ]
+            }}"#,
+            game_dir.to_string_lossy()
+        ),
+        true,
+    );
+
+    let plan = prepare_launch(
+        &LaunchRequest {
+            minecraft_dir: minecraft_dir.to_string_lossy().to_string(),
+            version_id: "1.16.5-redux".to_string(),
+            username: "Player".to_string(),
+            required_java_major: None,
+            max_memory_mb: None,
+        },
+        "redux-launch".to_string(),
+    )
+    .expect("redux plan should build");
+
+    assert_eq!(plan.game_directory, game_dir);
+    assert!(plan
+        .game_args
+        .windows(2)
+        .any(|pair| pair == ["--gameDir", game_dir.to_string_lossy().as_ref()]));
 }
 
 #[test]
@@ -278,6 +390,7 @@ fn prepare_launch_supports_legacy_library_artifacts_and_skips_native_only_classp
             version_id: "legacy-native-only".to_string(),
             username: "Player".to_string(),
             required_java_major: None,
+            max_memory_mb: None,
         },
         "legacy-native-only-launch".to_string(),
     )
@@ -391,6 +504,7 @@ fn prepare_launch_reports_actionable_missing_inputs() {
             version_id: "missing-runtime".to_string(),
             username: "Player".to_string(),
             required_java_major: None,
+            max_memory_mb: None,
         },
         "runtime".to_string(),
     )
@@ -403,6 +517,7 @@ fn prepare_launch_reports_actionable_missing_inputs() {
             version_id: "missing-library".to_string(),
             username: "Player".to_string(),
             required_java_major: None,
+            max_memory_mb: None,
         },
         "library".to_string(),
     )
@@ -415,6 +530,7 @@ fn prepare_launch_reports_actionable_missing_inputs() {
             version_id: "missing-assets".to_string(),
             username: "Player".to_string(),
             required_java_major: None,
+            max_memory_mb: None,
         },
         "assets".to_string(),
     )
@@ -429,6 +545,7 @@ fn prepare_launch_reports_actionable_missing_inputs() {
             version_id: "missing-natives".to_string(),
             username: "Player".to_string(),
             required_java_major: None,
+            max_memory_mb: None,
         },
         "natives".to_string(),
     )
@@ -464,6 +581,7 @@ fn run_launch_forwards_stdout_and_stderr_logs() {
     let plan = LaunchPlan {
         launch_id: "fake-launch".to_string(),
         minecraft_dir: temp_dir.path().to_path_buf(),
+        game_directory: temp_dir.path().to_path_buf(),
         version_id: "fake".to_string(),
         java_executable,
         main_class: "ignored".to_string(),

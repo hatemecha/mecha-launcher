@@ -89,11 +89,16 @@ mod tests {
             id: "demo".to_string(),
             main_class: "net.minecraft.Main".to_string(),
             asset_index_id: Some("demo".to_string()),
+            asset_index_url: None,
+            asset_index_sha1: None,
+            asset_index_size: None,
             java_version: Some(JavaVersion {
                 component: "jre-legacy".to_string(),
                 major_version: 8,
             }),
             version_type: "release".to_string(),
+            game_directory: None,
+            source_kind: None,
             libraries: vec![Library {
                 name: Some("com.example:demo:1.0.0".to_string()),
                 artifact: None,
@@ -146,11 +151,16 @@ mod tests {
             id: "demo".to_string(),
             main_class: "net.minecraft.Main".to_string(),
             asset_index_id: Some("demo".to_string()),
+            asset_index_url: None,
+            asset_index_sha1: None,
+            asset_index_size: None,
             java_version: Some(JavaVersion {
                 component: "jre-legacy".to_string(),
                 major_version: 8,
             }),
             version_type: "release".to_string(),
+            game_directory: None,
+            source_kind: None,
             libraries: vec![Library {
                 name: Some("net.minecraft:launchwrapper:1.7".to_string()),
                 artifact: Some(LibraryDownload {
@@ -209,11 +219,16 @@ mod tests {
             id: "demo".to_string(),
             main_class: "net.minecraft.Main".to_string(),
             asset_index_id: Some("demo".to_string()),
+            asset_index_url: None,
+            asset_index_sha1: None,
+            asset_index_size: None,
             java_version: Some(JavaVersion {
                 component: "jre-legacy".to_string(),
                 major_version: 8,
             }),
             version_type: "release".to_string(),
+            game_directory: None,
+            source_kind: None,
             libraries: vec![Library {
                 name: Some("org.lwjgl.lwjgl:lwjgl-platform:2.9.4-nightly-20150209".to_string()),
                 artifact: None,
@@ -260,11 +275,16 @@ mod tests {
             id: "demo".to_string(),
             main_class: "net.minecraft.Main".to_string(),
             asset_index_id: Some("demo".to_string()),
+            asset_index_url: None,
+            asset_index_sha1: None,
+            asset_index_size: None,
             java_version: Some(JavaVersion {
                 component: "jre-legacy".to_string(),
                 major_version: 8,
             }),
             version_type: "release".to_string(),
+            game_directory: None,
+            source_kind: None,
             libraries: vec![Library {
                 name: Some("org.lwjgl.lwjgl:lwjgl-platform:2.9.4-nightly-20150209".to_string()),
                 artifact: Some(LibraryDownload {

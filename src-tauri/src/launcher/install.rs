@@ -17,7 +17,7 @@ use walkdir::WalkDir;
 
 use crate::launcher::{
     hash::sha1_hex,
-    manifest::JavaVersion,
+    manifest::{load_merged_manifest, JavaVersion, ResolvedManifest},
     rules::{rules_allow, Rule, RuntimeEnvironment},
     LauncherError, LauncherResult,
 };
@@ -30,6 +30,7 @@ const ASSETS_BASE_URL: &str = "https://resources.download.minecraft.net/";
 const OPTIFINE_ADLOAD_BASE_URL: &str = "https://optifine.net/adloadx";
 const OPTIFINE_BASE_URL: &str = "https://optifine.net/";
 const OPTIFINE_DOWNLOADS_URL: &str = "https://optifine.net/downloads";
+const FABRIC_META_BASE_URL: &str = "https://meta.fabricmc.net/v2/versions/loader";
 const OPTIFINE_INSTALLER_TIMEOUT: Duration = Duration::from_secs(300);
 const OPTIFINE_INSTALLER_ERROR_TAIL_LINES: usize = 80;
 const OPTIFINE_INSTALLER_ERROR_MAX_CHARS: usize = 12_000;
@@ -124,6 +125,57 @@ pub struct VanillaInstallStatusEvent {
 }
 
 type VanillaProgressSink = Arc<dyn Fn(VanillaInstallStatusEvent) + Send + Sync>;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReduxInstallOption {
+    pub id: String,
+    pub version_id: String,
+    pub title: String,
+    pub summary: String,
+    pub minecraft_version: String,
+    pub fabric_loader_version: String,
+    pub recommended_java_major: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReduxInstallStatusEvent {
+    pub option_id: String,
+    pub version_id: String,
+    pub stage: String,
+    pub message: String,
+    pub current: Option<u32>,
+    pub total: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReduxInstallResult {
+    pub version_id: String,
+    pub minecraft_version: String,
+    pub fabric_loader_version: String,
+}
+
+type ReduxProgressSink = Arc<dyn Fn(ReduxInstallStatusEvent) + Send + Sync>;
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReduxPackManifest {
+    id: String,
+    title: String,
+    minecraft_version: String,
+    fabric_loader_version: String,
+    #[serde(default = "default_mods_subdir")]
+    mods_subdir: String,
+    recommended_java_major: u32,
+}
+
+#[derive(Debug, Clone)]
+struct ReduxPack {
+    pack_dir: PathBuf,
+    manifest: ReduxPackManifest,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -399,6 +451,118 @@ pub async fn list_vanilla_releases() -> LauncherResult<Vec<VanillaRelease>> {
     Ok(releases)
 }
 
+fn default_mods_subdir() -> String {
+    ".".to_string()
+}
+
+fn redux_repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .canonicalize()
+        .unwrap_or_else(|_| Path::new(env!("CARGO_MANIFEST_DIR")).join(".."))
+}
+
+fn read_redux_pack_from_dir(pack_dir: &Path) -> LauncherResult<ReduxPack> {
+    let manifest_path = pack_dir.join("pack.json");
+    let manifest_text = fs::read_to_string(&manifest_path).map_err(|error| {
+        LauncherError::new(format!(
+            "Failed to read redux pack manifest {}: {error}",
+            manifest_path.display()
+        ))
+    })?;
+    let manifest = serde_json::from_str::<ReduxPackManifest>(&manifest_text).map_err(|error| {
+        LauncherError::new(format!(
+            "Invalid redux pack manifest {}: {error}",
+            manifest_path.display()
+        ))
+    })?;
+
+    Ok(ReduxPack {
+        pack_dir: pack_dir.to_path_buf(),
+        manifest,
+    })
+}
+
+fn read_redux_packs_from(root: &Path) -> LauncherResult<Vec<ReduxPack>> {
+    let mut packs = Vec::new();
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        if !file_name.ends_with("-redux") {
+            continue;
+        }
+
+        let manifest_path = path.join("pack.json");
+        if !manifest_path.is_file() {
+            continue;
+        }
+
+        packs.push(read_redux_pack_from_dir(&path)?);
+    }
+
+    packs.sort_by(|left, right| left.manifest.id.cmp(&right.manifest.id));
+    Ok(packs)
+}
+
+fn list_redux_install_options_from(root: &Path) -> LauncherResult<Vec<ReduxInstallOption>> {
+    read_redux_packs_from(root).map(|packs| {
+        packs.into_iter()
+            .map(|pack| ReduxInstallOption {
+                id: pack.manifest.id.clone(),
+                version_id: pack.manifest.id.clone(),
+                title: pack.manifest.title.clone(),
+                summary: format!(
+                    "Fabric {} con mods curados para Minecraft {}.",
+                    pack.manifest.fabric_loader_version, pack.manifest.minecraft_version
+                ),
+                minecraft_version: pack.manifest.minecraft_version.clone(),
+                fabric_loader_version: pack.manifest.fabric_loader_version.clone(),
+                recommended_java_major: pack.manifest.recommended_java_major,
+            })
+            .collect()
+    })
+}
+
+pub fn list_redux_install_options() -> LauncherResult<Vec<ReduxInstallOption>> {
+    list_redux_install_options_from(&redux_repo_root())
+}
+
+fn find_redux_pack(option_id: &str) -> LauncherResult<ReduxPack> {
+    read_redux_packs_from(&redux_repo_root())?
+        .into_iter()
+        .find(|pack| pack.manifest.id == option_id)
+        .ok_or_else(|| LauncherError::new(format!("Unknown redux install option: {option_id}")))
+}
+
+pub async fn ensure_launch_requirements(
+    minecraft_dir: &Path,
+    version_id: &str,
+) -> LauncherResult<()> {
+    ensure_minecraft_layout(minecraft_dir)?;
+
+    let manifest = load_merged_manifest(minecraft_dir, version_id)?;
+    let client = Client::builder()
+        .user_agent("mecha-launcher/0.1")
+        .build()
+        .map_err(|error| LauncherError::new(format!("Failed to create HTTP client: {error}")))?;
+
+    ensure_manifest_libraries(&client, minecraft_dir, &manifest).await?;
+    ensure_manifest_assets(&client, minecraft_dir, version_id, &manifest).await?;
+
+    if let Some(java_version) = manifest.java_version.as_ref() {
+        let silent_progress: ProgressSink = Arc::new(|_event| {});
+        install_java_runtime(&client, minecraft_dir, version_id, java_version, &silent_progress)
+            .await?;
+    }
+
+    Ok(())
+}
+
 fn emit_vanilla(
     progress: &VanillaProgressSink,
     version_id: &str,
@@ -408,6 +572,25 @@ fn emit_vanilla(
     total: Option<u32>,
 ) {
     progress(VanillaInstallStatusEvent {
+        version_id: version_id.to_string(),
+        stage: stage.to_string(),
+        message: message.to_string(),
+        current,
+        total,
+    });
+}
+
+fn emit_redux(
+    progress: &ReduxProgressSink,
+    option_id: &str,
+    version_id: &str,
+    stage: &str,
+    message: &str,
+    current: Option<u32>,
+    total: Option<u32>,
+) {
+    progress(ReduxInstallStatusEvent {
+        option_id: option_id.to_string(),
         version_id: version_id.to_string(),
         stage: stage.to_string(),
         message: message.to_string(),
@@ -510,6 +693,103 @@ pub async fn install_vanilla_version(
     );
 
     Ok(())
+}
+
+pub async fn install_redux_version(
+    minecraft_dir: &Path,
+    option_id: &str,
+    progress: ReduxProgressSink,
+) -> LauncherResult<ReduxInstallResult> {
+    let pack = find_redux_pack(option_id)?;
+    let version_id = pack.manifest.id.clone();
+    let client = Client::builder()
+        .user_agent("mecha-launcher/0.1")
+        .build()
+        .map_err(|error| LauncherError::new(format!("Failed to create HTTP client: {error}")))?;
+
+    emit_redux(
+        &progress,
+        option_id,
+        &version_id,
+        "prepare",
+        "Preparing redux pack installation.",
+        None,
+        None,
+    );
+    ensure_minecraft_layout(minecraft_dir)?;
+
+    let progress_clone = progress.clone();
+    let option_id_owned = option_id.to_string();
+    let version_id_owned = version_id.clone();
+    let mapped_progress: VanillaProgressSink = Arc::new(move |event| {
+        emit_redux(
+            &progress_clone,
+            &option_id_owned,
+            &version_id_owned,
+            &event.stage,
+            &event.message,
+            event.current,
+            event.total,
+        )
+    });
+    install_vanilla_version(minecraft_dir, &pack.manifest.minecraft_version, mapped_progress).await?;
+
+    let fabric_profile_url = format!(
+        "{FABRIC_META_BASE_URL}/{}/{}/profile/json",
+        pack.manifest.minecraft_version, pack.manifest.fabric_loader_version
+    );
+    emit_redux(
+        &progress,
+        option_id,
+        &version_id,
+        "fabric",
+        "Downloading Fabric profile.",
+        None,
+        None,
+    );
+    let fabric_profile_text = fetch_text(&client, &fabric_profile_url).await?;
+    let game_directory = minecraft_dir
+        .join("mecha-instances")
+        .join(&pack.manifest.id)
+        .canonicalize()
+        .unwrap_or_else(|_| minecraft_dir.join("mecha-instances").join(&pack.manifest.id));
+    let fabric_manifest_text = build_redux_manifest(
+        &fabric_profile_text,
+        &pack.manifest,
+        &game_directory,
+    )?;
+    write_redux_version_files(
+        minecraft_dir,
+        &pack.manifest.id,
+        &pack.manifest.minecraft_version,
+        &fabric_manifest_text,
+    )?;
+
+    let mods_source_dir = safe_join(&pack.pack_dir, &pack.manifest.mods_subdir)?;
+    let instance_dir = minecraft_dir.join("mecha-instances").join(&pack.manifest.id);
+    install_redux_instance_files(
+        &instance_dir,
+        &mods_source_dir,
+        &progress,
+        option_id,
+        &version_id,
+    )?;
+
+    emit_redux(
+        &progress,
+        option_id,
+        &version_id,
+        "done",
+        &format!("{} is ready to play.", pack.manifest.id),
+        Some(1),
+        Some(1),
+    );
+
+    Ok(ReduxInstallResult {
+        version_id: pack.manifest.id,
+        minecraft_version: pack.manifest.minecraft_version,
+        fabric_loader_version: pack.manifest.fabric_loader_version,
+    })
 }
 
 pub async fn install_optifine_version(
@@ -630,6 +910,235 @@ fn emit(
 fn ensure_minecraft_layout(minecraft_dir: &Path) -> LauncherResult<()> {
     for directory in ["versions", "libraries", "assets/indexes", "assets/objects", "runtime"] {
         fs::create_dir_all(minecraft_dir.join(directory))?;
+    }
+
+    Ok(())
+}
+
+async fn ensure_manifest_libraries(
+    client: &Client,
+    minecraft_dir: &Path,
+    manifest: &ResolvedManifest,
+) -> LauncherResult<()> {
+    let environment = RuntimeEnvironment::current();
+    let libraries_dir = minecraft_dir.join("libraries");
+
+    for library in &manifest.libraries {
+        if !library.is_allowed(&environment)? {
+            continue;
+        }
+
+        if let Some((relative_path, url, sha1, size)) = library.artifact_download_source()? {
+            let target = safe_join(&libraries_dir, &relative_path)?;
+            download_file(client, &url, &target, sha1.as_deref(), size, false, None).await?;
+        }
+
+        let Some(classifier) = library.native_classifier(&environment) else {
+            continue;
+        };
+
+        if let Some((relative_path, url, sha1, size)) =
+            library.classifier_download_source(&classifier)?
+        {
+            let target = safe_join(&libraries_dir, &relative_path)?;
+            download_file(client, &url, &target, sha1.as_deref(), size, false, None).await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn ensure_manifest_assets(
+    client: &Client,
+    minecraft_dir: &Path,
+    job_id: &str,
+    manifest: &ResolvedManifest,
+) -> LauncherResult<()> {
+    let Some(asset_index_id) = manifest.asset_index_id.as_ref() else {
+        return Ok(());
+    };
+    let Some(asset_index_url) = manifest.asset_index_url.as_ref() else {
+        return Ok(());
+    };
+
+    let index_target = minecraft_dir
+        .join("assets")
+        .join("indexes")
+        .join(format!("{asset_index_id}.json"));
+
+    let index_text = if index_target.is_file() {
+        fs::read_to_string(&index_target).map_err(|error| {
+            LauncherError::new(format!(
+                "Failed to read asset index {}: {error}",
+                index_target.display()
+            ))
+        })?
+    } else {
+        let text = fetch_text(client, asset_index_url).await?;
+        validate_bytes(
+            text.as_bytes(),
+            manifest.asset_index_sha1.as_deref(),
+            manifest.asset_index_size,
+            asset_index_url,
+        )?;
+        fs::write(&index_target, text.as_bytes())?;
+        text
+    };
+
+    let assets = serde_json::from_str::<AssetObjects>(&index_text)
+        .map_err(|error| LauncherError::new(format!("Invalid asset index: {error}")))?;
+
+    for asset in assets.objects.values() {
+        let prefix = asset
+            .hash
+            .get(0..2)
+            .ok_or_else(|| LauncherError::new("Asset hash is too short."))?;
+        let target = minecraft_dir
+            .join("assets")
+            .join("objects")
+            .join(prefix)
+            .join(&asset.hash);
+        let url = format!("{ASSETS_BASE_URL}{prefix}/{}", asset.hash);
+
+        download_file(
+            client,
+            &url,
+            &target,
+            Some(&asset.hash),
+            asset.size,
+            false,
+            None,
+        )
+        .await
+        .map_err(|error| {
+            LauncherError::new(format!(
+                "Failed to prepare asset data for {job_id}: {error}"
+            ))
+        })?;
+    }
+
+    Ok(())
+}
+
+fn build_redux_manifest(
+    base_manifest_text: &str,
+    manifest: &ReduxPackManifest,
+    game_directory: &Path,
+) -> LauncherResult<String> {
+    let mut json = serde_json::from_str::<serde_json::Value>(base_manifest_text).map_err(|error| {
+        LauncherError::new(format!("Invalid Fabric profile manifest: {error}"))
+    })?;
+    let Some(object) = json.as_object_mut() else {
+        return Err(LauncherError::new(
+            "Fabric profile manifest did not contain a JSON object.",
+        ));
+    };
+
+    object.insert("id".to_string(), serde_json::Value::String(manifest.id.clone()));
+    object.insert(
+        "inheritsFrom".to_string(),
+        serde_json::Value::String(manifest.minecraft_version.clone()),
+    );
+    object.insert(
+        "type".to_string(),
+        serde_json::Value::String("release".to_string()),
+    );
+    object.insert(
+        "mecha".to_string(),
+        serde_json::json!({
+            "gameDirectory": game_directory.to_string_lossy().to_string(),
+            "sourceKind": "redux"
+        }),
+    );
+
+    serde_json::to_string_pretty(&json)
+        .map_err(|error| LauncherError::new(format!("Failed to serialize redux manifest: {error}")))
+}
+
+fn write_redux_version_files(
+    minecraft_dir: &Path,
+    version_id: &str,
+    minecraft_version: &str,
+    manifest_text: &str,
+) -> LauncherResult<()> {
+    let version_dir = minecraft_dir.join("versions").join(version_id);
+    if version_dir.exists() {
+        fs::remove_dir_all(&version_dir)?;
+    }
+    fs::create_dir_all(&version_dir)?;
+    fs::write(version_dir.join(format!("{version_id}.json")), manifest_text.as_bytes())?;
+
+    let base_jar = minecraft_dir
+        .join("versions")
+        .join(minecraft_version)
+        .join(format!("{minecraft_version}.jar"));
+    let target_jar = version_dir.join(format!("{version_id}.jar"));
+    fs::copy(&base_jar, &target_jar).map_err(|error| {
+        LauncherError::new(format!(
+            "Failed to copy base Minecraft jar from {} to {}: {error}",
+            base_jar.display(),
+            target_jar.display()
+        ))
+    })?;
+
+    Ok(())
+}
+
+fn install_redux_instance_files(
+    instance_dir: &Path,
+    mods_source_dir: &Path,
+    progress: &ReduxProgressSink,
+    option_id: &str,
+    version_id: &str,
+) -> LauncherResult<()> {
+    fs::create_dir_all(instance_dir)?;
+    for directory in ["config", "resourcepacks", "shaderpacks"] {
+        fs::create_dir_all(instance_dir.join(directory))?;
+    }
+
+    let mods_target_dir = instance_dir.join("mods");
+    if mods_target_dir.exists() {
+        fs::remove_dir_all(&mods_target_dir)?;
+    }
+    fs::create_dir_all(&mods_target_dir)?;
+
+    let mod_files = fs::read_dir(mods_source_dir)?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .filter(|path| {
+            path.extension()
+                .map(|extension| extension.to_string_lossy().eq_ignore_ascii_case("jar"))
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    let total = mod_files.len() as u32;
+
+    emit_redux(
+        progress,
+        option_id,
+        version_id,
+        "mods",
+        &format!("Copying {total} mods."),
+        Some(0),
+        Some(total),
+    );
+
+    for (index, path) in mod_files.iter().enumerate() {
+        let file_name = path.file_name().ok_or_else(|| {
+            LauncherError::new(format!("Invalid mod file path: {}", path.display()))
+        })?;
+        fs::copy(path, mods_target_dir.join(file_name))?;
+        let current = (index + 1) as u32;
+        emit_redux(
+            progress,
+            option_id,
+            version_id,
+            "mods",
+            &format!("Mods copied: {current}/{total}."),
+            Some(current),
+            Some(total),
+        );
     }
 
     Ok(())
@@ -1612,13 +2121,15 @@ fn find_runtime_java(runtime_root: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, fs};
+    use std::{collections::HashMap, fs, sync::Arc};
 
     use crate::launcher::rules::RuntimeEnvironment;
 
     use super::{
-        collect_required_libraries, extract_optifine_download_path, maven_artifact_path,
-        parse_optifine_downloads_html, safe_join, DownloadArtifact, GameLibrary, LibraryDownloads,
+        build_redux_manifest, collect_required_libraries, default_mods_subdir,
+        extract_optifine_download_path, install_redux_instance_files, list_redux_install_options_from,
+        maven_artifact_path, parse_optifine_downloads_html, safe_join, DownloadArtifact,
+        GameLibrary, LibraryDownloads, ReduxPackManifest,
     };
     use tempfile::tempdir;
 
@@ -1776,5 +2287,85 @@ mod tests {
     fn safe_join_rejects_path_traversal() {
         assert!(safe_join(std::path::Path::new("/tmp/root"), "../escape").is_err());
         assert!(safe_join(std::path::Path::new("/tmp/root"), "libraries/demo.jar").is_ok());
+    }
+
+    #[test]
+    fn list_redux_install_options_reads_pack_manifest() {
+        let temp_dir = tempdir().expect("tempdir should be created");
+        let pack_dir = temp_dir.path().join("minecraft-1.16.5-redux");
+        fs::create_dir_all(&pack_dir).expect("pack dir should exist");
+        fs::write(
+            pack_dir.join("pack.json"),
+            r#"{
+              "id":"1.16.5-redux",
+              "title":"Minecraft 1.16.5 Redux",
+              "minecraftVersion":"1.16.5",
+              "fabricLoaderVersion":"0.16.10",
+              "recommendedJavaMajor":8
+            }"#,
+        )
+        .expect("pack manifest should be written");
+
+        let options =
+            list_redux_install_options_from(temp_dir.path()).expect("redux options should load");
+
+        assert_eq!(options.len(), 1);
+        assert_eq!(options[0].id, "1.16.5-redux");
+        assert_eq!(options[0].minecraft_version, "1.16.5");
+        assert_eq!(options[0].fabric_loader_version, "0.16.10");
+    }
+
+    #[test]
+    fn build_redux_manifest_sets_id_inherits_and_mecha_metadata() {
+        let manifest = ReduxPackManifest {
+            id: "1.16.5-redux".to_string(),
+            title: "Minecraft 1.16.5 Redux".to_string(),
+            minecraft_version: "1.16.5".to_string(),
+            fabric_loader_version: "0.16.10".to_string(),
+            mods_subdir: default_mods_subdir(),
+            recommended_java_major: 8,
+        };
+
+        let rendered = build_redux_manifest(
+            r#"{"id":"fabric-loader-0.16.10-1.16.5","mainClass":"net.fabricmc.loader.impl.launch.knot.KnotClient"}"#,
+            &manifest,
+            std::path::Path::new("/tmp/.minecraft/mecha-instances/1.16.5-redux"),
+        )
+        .expect("redux manifest should render");
+        let parsed =
+            serde_json::from_str::<serde_json::Value>(&rendered).expect("manifest should parse");
+
+        assert_eq!(parsed["id"], "1.16.5-redux");
+        assert_eq!(parsed["inheritsFrom"], "1.16.5");
+        assert_eq!(
+            parsed["mecha"]["sourceKind"],
+            serde_json::Value::String("redux".to_string())
+        );
+    }
+
+    #[test]
+    fn install_redux_instance_files_copies_jar_mods_into_isolated_mods_dir() {
+        let temp_dir = tempdir().expect("tempdir should be created");
+        let source_dir = temp_dir.path().join("pack");
+        let instance_dir = temp_dir.path().join(".minecraft").join("mecha-instances").join("1.16.5-redux");
+        fs::create_dir_all(&source_dir).expect("source dir should exist");
+        fs::write(source_dir.join("fabric-api.jar"), "demo").expect("mod should be written");
+        fs::write(source_dir.join("README.txt"), "skip").expect("non-mod file should be written");
+
+        let progress: super::ReduxProgressSink = Arc::new(|_event| {});
+        install_redux_instance_files(
+            &instance_dir,
+            &source_dir,
+            &progress,
+            "1.16.5-redux",
+            "1.16.5-redux",
+        )
+        .expect("redux instance files should install");
+
+        assert!(instance_dir.join("mods").join("fabric-api.jar").is_file());
+        assert!(!instance_dir.join("mods").join("README.txt").exists());
+        assert!(instance_dir.join("config").is_dir());
+        assert!(instance_dir.join("resourcepacks").is_dir());
+        assert!(instance_dir.join("shaderpacks").is_dir());
     }
 }

@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 
 import type {
   LaunchRequest,
+  SystemMemoryProfile,
   LaunchResponse,
   DependencyInstallResult,
   GraphicsDependencyStatus,
@@ -15,6 +16,10 @@ import type {
   OptifineInstallRequest,
   OptifineInstallResult,
   OptifineInstallStatusEvent,
+  ReduxInstallOption,
+  ReduxInstallRequest,
+  ReduxInstallResult,
+  ReduxInstallStatusEvent,
   VanillaInstallRequest,
   VanillaInstallResult,
   VanillaInstallStatusEvent,
@@ -24,6 +29,10 @@ import type {
 
 export async function detectDefaultMinecraftDir(): Promise<string | null> {
   return invoke<string | null>("detect_default_minecraft_dir");
+}
+
+export async function getSystemMemoryProfile(): Promise<SystemMemoryProfile> {
+  return invoke<SystemMemoryProfile>("get_system_memory_profile");
 }
 
 export async function browseMinecraftDir(): Promise<string | null> {
@@ -68,6 +77,10 @@ export async function listVanillaReleases(): Promise<VanillaRelease[]> {
   return invoke<VanillaRelease[]>("list_vanilla_releases");
 }
 
+export async function listReduxInstallOptions(): Promise<ReduxInstallOption[]> {
+  return invoke<ReduxInstallOption[]>("list_redux_install_options");
+}
+
 export async function installOptifineVersion(
   request: OptifineInstallRequest
 ): Promise<OptifineInstallResult> {
@@ -78,6 +91,12 @@ export async function installVanillaVersion(
   request: VanillaInstallRequest
 ): Promise<VanillaInstallResult> {
   return invoke<VanillaInstallResult>("install_vanilla_version", { request });
+}
+
+export async function installReduxVersion(
+  request: ReduxInstallRequest
+): Promise<ReduxInstallResult> {
+  return invoke<ReduxInstallResult>("install_redux_version", { request });
 }
 
 export async function deleteInstalledVersion(
@@ -120,6 +139,14 @@ export function onVanillaInstallStatus(
   handler: (event: VanillaInstallStatusEvent) => void
 ): Promise<() => void> {
   return listen<VanillaInstallStatusEvent>("vanilla-install:status", (event) => {
+    handler(event.payload);
+  });
+}
+
+export function onReduxInstallStatus(
+  handler: (event: ReduxInstallStatusEvent) => void
+): Promise<() => void> {
+  return listen<ReduxInstallStatusEvent>("redux-install:status", (event) => {
     handler(event.payload);
   });
 }

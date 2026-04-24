@@ -1,3 +1,11 @@
+@font-face {
+  font-family: "Minecraft";
+  src: url("/Minecraft.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   color-scheme: dark;
   --bg: #0c0c0c;
@@ -22,7 +30,7 @@
   --header-h: 40px;
   --sans: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
   --mono: "JetBrains Mono", "Courier New", Consolas, monospace;
-  --pixel: "JetBrains Mono", "Courier New", Consolas, monospace;
+  --pixel: "Minecraft", "JetBrains Mono", "Courier New", Consolas, monospace;
   font-family: var(--sans);
   color: var(--white);
   background: var(--bg);
@@ -620,10 +628,64 @@ h1.stage-title-lockup .stage-title-wordmark {
   min-width: 320px;
   align-self: stretch;
   min-height: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   border-left: 1px solid var(--border);
   background: var(--bg-panel);
+}
+
+.control-panel-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.control-panel-footer {
+  flex: 0 0 auto;
+  padding: 12px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+
+.control-panel-play {
+  width: 100%;
+  min-height: 74px;
+  padding: 16px 18px;
+  border-color: color-mix(in srgb, var(--red), #000 10%);
+  background: var(--red);
+  color: #080808;
+  font-family: var(--pixel);
+  font-size: 18px;
+  font-weight: 400;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+}
+
+.control-panel-play .app-icon {
+  stroke: currentColor;
+}
+
+.control-panel-play:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--red), #000 14%);
+  border-color: color-mix(in srgb, var(--red), #000 22%);
+  color: #040404;
+}
+
+.control-panel-play:disabled {
+  background: color-mix(in srgb, var(--red), #000 55%);
+  border-color: color-mix(in srgb, var(--red), #000 60%);
+  color: rgba(0, 0, 0, 0.72);
+  opacity: 1;
+}
+
+.play-blocked-note {
+  margin: 10px 2px 0;
+  color: var(--gray);
+  font-size: 11px;
+  line-height: 1.45;
+  text-align: center;
 }
 
 .panel-section {
@@ -787,6 +849,54 @@ h1.stage-title-lockup .stage-title-wordmark {
 
 .offline-skin-field {
   margin-top: 10px;
+}
+
+.memory-summary-grid {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.memory-summary-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.memory-summary-label {
+  color: var(--gray-dim);
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+}
+
+.memory-summary-value {
+  color: var(--white);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.memory-mode-toggle {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.memory-control-grid {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.memory-range {
+  width: 100%;
+  accent-color: var(--red);
+}
+
+.memory-number-input {
+  margin-bottom: 0;
 }
 
 .status-msg {
@@ -1059,6 +1169,7 @@ h1.stage-title-lockup .stage-title-wordmark {
   height: 18px;
 }
 
+
 .empty-state {
   display: grid;
   place-items: center;
@@ -1183,9 +1294,13 @@ h1.stage-title-lockup .stage-title-wordmark {
     width: 100%;
     min-width: 0;
     align-self: stretch;
-    overflow-y: visible;
+    overflow: visible;
     border-top: 1px solid var(--border);
     border-left: none;
+  }
+
+  .control-panel-scroll {
+    overflow: visible;
   }
 
   .versions-section {
@@ -1262,6 +1377,7 @@ h1.stage-title-lockup .stage-title-wordmark {
     display: grid;
     grid-template-columns: 1fr;
   }
+
 }
 
 @media (prefers-reduced-motion: reduce) {
