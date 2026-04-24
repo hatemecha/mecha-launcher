@@ -70,6 +70,7 @@ pub struct LaunchRequest {
     pub minecraft_dir: String,
     pub version_id: String,
     pub username: String,
+    pub required_java_major: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -196,20 +197,20 @@ fn validate_legacy_lwjgl_linux_graphics(manifest: &ResolvedManifest) -> Launcher
 
     if !is_command_available("xrandr") {
         return Err(LauncherError::new(
-            "Falta compatibilidad grafica Linux para Minecraft antiguo: LWJGL 2 necesita xrandr. Instalalo desde el panel de Dependencias y volve a jugar.",
+            "Legacy Minecraft on Linux requires xrandr for LWJGL 2. Install it from the Dependencies panel and try again.",
         ));
     }
 
     let output = Command::new("xrandr").arg("-q").output().map_err(|error| {
         LauncherError::new(format!(
-            "No se pudo ejecutar xrandr para validar la pantalla: {error}"
+            "Failed to run xrandr while validating display availability: {error}"
         ))
     })?;
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     if !output.status.success() || !stdout.contains(" connected") {
         return Err(LauncherError::new(
-            "xrandr esta instalado pero no devolvio pantallas conectadas. Minecraft 1.8.9/LWJGL 2 suele crashear asi; inicia sesion con X11/XWayland disponible o revisa tu configuracion de pantalla.",
+            "xrandr is installed but did not report any connected displays. Minecraft 1.8.9 with LWJGL 2 usually crashes in this state; start the session with X11/XWayland available or review the display configuration.",
         ));
     }
 
@@ -360,7 +361,14 @@ pub fn prepare_launch(request: &LaunchRequest, launch_id: String) -> LauncherRes
         &classpath_entries,
     )?;
 
-    let java_executable = resolve_java_executable(&minecraft_dir, manifest.java_version.as_ref())?;
+    let required_java_major = request
+        .required_java_major
+        .or_else(|| manifest.java_version.as_ref().map(|version| version.major_version));
+    let java_executable = resolve_java_executable(
+        &minecraft_dir,
+        manifest.java_version.as_ref(),
+        required_java_major,
+    )?;
 
     let launch_arguments = collect_launch_arguments(&manifest, &launch_variables)?;
 

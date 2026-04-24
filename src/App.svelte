@@ -4,6 +4,13 @@
   import brandMarkUrl from "../hatecreeper2.png?url";
 
   import {
+    buildCatalogItems,
+    filterCatalogItems,
+    findCatalogItemForInstalledVersion,
+    type CatalogFilter,
+    type CatalogItem
+  } from "./lib/catalog";
+  import {
     autoInstallGraphicsDependency,
     autoInstallJava,
     browseMinecraftDir,
@@ -24,6 +31,17 @@
     onVanillaInstallStatus
   } from "./lib/tauri";
   import {
+    formatLauncherStatusMessage,
+    formatOptifineInstallMessage,
+    formatVanillaInstallMessage
+  } from "./lib/launcher-messages";
+  import DependencyBanner from "./lib/components/DependencyBanner.svelte";
+  import LanguagePanel from "./lib/components/LanguagePanel.svelte";
+  import LaunchStage from "./lib/components/LaunchStage.svelte";
+  import MinecraftDirectoryPanel from "./lib/components/MinecraftDirectoryPanel.svelte";
+  import OfflineProfilePanel from "./lib/components/OfflineProfilePanel.svelte";
+  import VersionCatalogPanel from "./lib/components/VersionCatalogPanel.svelte";
+  import {
     clearSelectedVersionId,
     incrementPopularity,
     loadStoredMinecraftDir,
@@ -38,8 +56,6 @@
     storeOfflineUsername,
     toggleFavoriteKey
   } from "./lib/storage";
-  import CatScene from "./lib/CatScene.svelte";
-  import PlayerScene from "./lib/PlayerScene.svelte";
   import {
     applyDocumentLang,
     fillTemplate,
@@ -62,6 +78,8 @@
   const DEFAULT_OFFLINE_USERNAME = "Player";
   const THEME_STORAGE_KEY = "mecha-launcher.themeMode";
   const MAX_LOG_LINES = 250;
+  const MAX_OFFLINE_SKIN_BYTES = 1024 * 1024;
+  const VALID_OFFLINE_SKIN_DIMENSIONS = new Set(["64x32", "64x64"]);
 
   let locale: Locale = readStoredLocale();
 
@@ -90,12 +108,13 @@
   let javaStatus:
     | {
         installed: boolean;
+        meetsRequirement: boolean;
         detectedMajor?: number | null;
         suggestedLinuxCommands?: string[] | null;
         suggestedWindowsLinks?: { label: string; url: string }[] | null;
         canAutoInstall?: boolean | null;
         autoInstallHint?: string | null;
-        recommendedMajor?: number | null;
+        requiredMajor?: number | null;
       }
     | null = null;
   let graphicsStatus:
@@ -122,19 +141,11 @@
   let logViewport: HTMLDivElement | null = null;
   let copiedLog = false;
   let themeMode: ThemeMode = "dark";
-  let versionFilter:
-    | "installed"
-    | "all"
-    | "popular"
-    | "favorites"
-    | "optifine"
-    | "vanilla" = "installed";
+  let versionFilter: CatalogFilter = "installed";
+  let lastDependencyRequirement: number | null | undefined = undefined;
 
   $: needsJavaAttention = Boolean(
-    javaStatus &&
-      (!javaStatus.installed ||
-        (javaStatus.recommendedMajor &&
-          (!javaStatus.detectedMajor || javaStatus.detectedMajor < javaStatus.recommendedMajor)))
+    javaStatus && !selectedVersionProvidesRuntime && !javaStatus.installed
   );
 
   $: needsGraphicsAttention = Boolean(
@@ -276,32 +287,67 @@
     storeOfflineUsername(username);
   }
 
+  async function readFileAsDataUrl(file: File): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result ?? ""));
+      reader.onerror = () => reject(new Error(t("errSkinRead")));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function validateSkinDimensions(dataUrl: string): Promise<void> {
+    const image = new Image();
+
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error(t("errSkinRead")));
+      image.src = dataUrl;
+    });
+
+    const sizeKey = `${image.naturalWidth}x${image.naturalHeight}`;
+    if (!VALID_OFFLINE_SKIN_DIMENSIONS.has(sizeKey)) {
+      throw new Error(t("errSkinInvalidDimensions"));
+    }
+  }
+
   async function handleLocalSkinFile(file: File | null): Promise<void> {
     if (!file) {
       return;
     }
     if (file.type !== "image/png") {
-      errorMessage = "La skin debe ser un PNG.";
+      errorMessage = t("errSkinMustBePng");
       await appendLog("system", errorMessage);
       return;
     }
 
-    const dataUrl = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result ?? ""));
-      reader.onerror = () => reject(new Error("No se pudo leer el archivo."));
-      reader.readAsDataURL(file);
-    });
-    offlineSkinUrl = dataUrl;
-    storeOfflineSkinDataUrl(dataUrl);
+    if (file.size > MAX_OFFLINE_SKIN_BYTES) {
+      errorMessage = t("errSkinTooLarge");
+      await appendLog("system", errorMessage);
+      return;
+    }
+
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      await validateSkinDimensions(dataUrl);
+      offlineSkinUrl = dataUrl;
+      if (!storeOfflineSkinDataUrl(dataUrl)) {
+        throw new Error(t("errSkinStorage"));
+      }
+    } catch (error) {
+      errorMessage = getErrorMessage(error, t("errSkinRead"));
+      await appendLog("system", errorMessage);
+    }
   }
 
-  async function refreshDependencies(): Promise<void> {
+  async function refreshDependencies(requiredMajor = selectedSystemJavaMajorRequirement): Promise<void> {
     try {
-      javaStatus = await checkJavaDependency();
+      javaStatus = await checkJavaDependency(
+        requiredMajor ? { requiredMajor } : undefined
+      );
       graphicsStatus = await checkGraphicsDependency();
     } catch (error) {
-      await appendLog("system", getErrorMessage(error, "Failed to check dependencies."));
+      await appendLog("system", getErrorMessage(error, t("errCheckDependencies")));
     }
   }
 
@@ -315,7 +361,9 @@
     statusMessage = t("depsJavaInstalling");
 
     try {
-      const result = await autoInstallJava();
+      const result = await autoInstallJava(
+        selectedSystemJavaMajorRequirement ? { requiredMajor: selectedSystemJavaMajorRequirement } : undefined
+      );
       if (!result.ok) {
         const combined = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
         errorMessage = combined || t("depsJavaInstallFailed");
@@ -419,6 +467,7 @@
         "system",
         fillTemplate(translate(locale, "logReloadedVersions"), { path: trimmedDir })
       );
+      await refreshDependencies();
     } catch (error) {
       versions = [];
       selectedVersionId = "";
@@ -426,6 +475,7 @@
       errorMessage = getErrorMessage(error, translate(locale, "errReadVersions"));
       statusMessage = translate(locale, "statusDirInvalid");
       await appendLog("system", errorMessage);
+      await refreshDependencies();
     } finally {
       isLoadingVersions = false;
     }
@@ -546,12 +596,16 @@
       const response = await launchVersion({
         minecraftDir: minecraftDir.trim(),
         versionId: selectedVersionId,
-        username: offlineUsername.trim() || DEFAULT_OFFLINE_USERNAME
+        username: offlineUsername.trim() || DEFAULT_OFFLINE_USERNAME,
+        requiredJavaMajor: selectedRequiredJavaMajor
       });
 
       activeLaunchId = response.launchId;
       isLaunching = true;
-      statusMessage = translate(locale, "statusPreparingLaunch");
+      statusMessage = formatLauncherStatusMessage(locale, {
+        launchId: response.launchId,
+        state: "launching"
+      }, selectedVersionId);
       const optifineMatch = optifineOptions.find((option) => option.versionId === selectedVersionId);
       const popKey = (optifineMatch ? `optifine:${optifineMatch.id}` : `vanilla:${selectedVersionId}`) as const;
       incrementPopularity(popKey);
@@ -580,12 +634,11 @@
 
     activeLaunchId = event.launchId;
 
+    statusMessage = formatLauncherStatusMessage(locale, event, selectedVersionId);
+
     if (event.state === "error") {
       errorMessage = event.message ?? translate(locale, "errLaunchFailed");
     }
-
-    statusMessage =
-      event.message ?? fillTemplate(translate(locale, "launchState"), { state: event.state });
   }
 
   async function handleLog(event: LauncherLogEvent): Promise<void> {
@@ -601,8 +654,9 @@
       return;
     }
 
-    installProgress = event;
-    statusMessage = event.message;
+    const localizedMessage = formatOptifineInstallMessage(locale, event);
+    installProgress = { ...event, message: localizedMessage };
+    statusMessage = localizedMessage;
 
     const shouldLogInstallStatus =
       event.stage !== lastLoggedInstallStage ||
@@ -616,7 +670,7 @@
 
     if (shouldLogInstallStatus) {
       lastLoggedInstallStage = event.stage;
-      await appendLog("system", event.message);
+      await appendLog("system", localizedMessage);
     }
   }
 
@@ -625,8 +679,9 @@
       return;
     }
 
-    vanillaInstallProgress = event;
-    statusMessage = event.message;
+    const localizedMessage = formatVanillaInstallMessage(locale, event);
+    vanillaInstallProgress = { ...event, message: localizedMessage };
+    statusMessage = localizedMessage;
 
     const shouldLogInstallStatus =
       event.stage !== lastLoggedVanillaInstallStage ||
@@ -640,7 +695,7 @@
 
     if (shouldLogInstallStatus) {
       lastLoggedVanillaInstallStage = event.stage;
-      await appendLog("system", event.message);
+      await appendLog("system", localizedMessage);
     }
   }
 
@@ -658,39 +713,48 @@
   function handleVersionSelection(versionId: string): void {
     selectedVersionId = versionId;
     storeSelectedVersionId(versionId);
+    void refreshDependencies();
   }
 
   $: selectedVersion = versions.find((version) => version.id === selectedVersionId) ?? null;
+  $: selectedVersionProvidesRuntime = Boolean(selectedVersion?.javaComponent);
+  $: catalogItems = buildCatalogItems(versions, vanillaReleases, optifineOptions);
 
-  /** Installed catalog row for the selected version (OptiFine exposes a per-build Java recommendation). */
   $: selectedInstalledCatalogItem =
-    catalogItems.find((item) => item.installed && item.installedVersionId === selectedVersionId) ??
-    null;
+    findCatalogItemForInstalledVersion(catalogItems, selectedVersionId);
+  $: selectedRequiredJavaMajor =
+    selectedInstalledCatalogItem?.requiredJavaMajor ?? selectedVersion?.javaMajorVersion ?? null;
+  $: selectedSystemJavaMajorRequirement = selectedVersionProvidesRuntime
+    ? null
+    : selectedRequiredJavaMajor;
+  $: if (
+    javaStatus !== null &&
+    lastDependencyRequirement !== selectedSystemJavaMajorRequirement
+  ) {
+    lastDependencyRequirement = selectedSystemJavaMajorRequirement;
+    void refreshDependencies(selectedSystemJavaMajorRequirement);
+  }
 
-  $: javaMeetsSelectedCatalogRecommendation =
-    !selectedInstalledCatalogItem?.recommendedJavaMajor ||
-    (javaStatus != null &&
-      javaStatus.detectedMajor != null &&
-      javaStatus.detectedMajor >= selectedInstalledCatalogItem.recommendedJavaMajor);
-
-  /** Selected install (e.g. OptiFine) can require a higher Java than the global launcher check. */
   $: needsSelectedVersionJavaAttention = Boolean(
     javaStatus &&
-      !needsJavaAttention &&
-      selectedInstalledCatalogItem?.recommendedJavaMajor &&
-      (javaStatus.detectedMajor == null ||
-        javaStatus.detectedMajor < selectedInstalledCatalogItem.recommendedJavaMajor)
+      selectedSystemJavaMajorRequirement &&
+      !selectedVersionProvidesRuntime &&
+      !javaStatus.meetsRequirement
   );
 
   $: showDependencyWarnings =
     needsJavaAttention || needsGraphicsAttention || needsSelectedVersionJavaAttention;
 
+  $: javaLaunchReady = Boolean(
+    selectedVersionProvidesRuntime ||
+      (javaStatus?.installed &&
+        (!selectedSystemJavaMajorRequirement || javaStatus.meetsRequirement))
+  );
+
   $: systemDependenciesOk =
-    javaStatus !== null &&
     graphicsStatus !== null &&
-    !needsJavaAttention &&
     !needsGraphicsAttention &&
-    javaMeetsSelectedCatalogRecommendation;
+    javaLaunchReady;
 
   $: canPlay = Boolean(
     minecraftDir.trim() &&
@@ -704,79 +768,14 @@
   );
   $: installPercent = progressPercent(installProgress);
 
-  type CatalogKind = "vanilla" | "optifine";
-  type CatalogKey = `${CatalogKind}:${string}`;
-  type CatalogItem = {
-    key: CatalogKey;
-    id: string;
-    kind: CatalogKind;
-    title: string;
-    subtitle: string;
-    installed: boolean;
-    installedVersionId?: string;
-    recommendedJavaMajor?: number | null;
-    sourceUrl?: string | null;
-  };
-
   let favoriteKeys = loadFavoriteKeys();
   let popularity = loadPopularity();
-
-  $: catalogItems = buildCatalogItems(versions, vanillaReleases, optifineOptions);
-  $: filteredCatalogItems = filterCatalogItems(catalogItems, versionFilter);
-
-  function filterCatalogItems(items: CatalogItem[], filter: typeof versionFilter): CatalogItem[] {
-    const favorites = favoriteKeys;
-    const popularityMap = popularity;
-
-    const sortNewestFirst = (a: CatalogItem, b: CatalogItem) => {
-      // Vanilla releases are provided newest-first from the server.
-      // Keep that order for vanilla; otherwise stable sort below.
-      return 0;
-    };
-
-    const withRank = items.map((item, index) => ({ item, index }));
-
-    const base = withRank
-      .filter(({ item }) => {
-        switch (filter) {
-          case "installed":
-            return item.installed;
-          case "favorites":
-            return favorites.has(item.key);
-          case "optifine":
-            return item.kind === "optifine";
-          case "vanilla":
-            return item.kind === "vanilla";
-          case "popular":
-          case "all":
-          default:
-            return true;
-        }
-      })
-      .sort((a, b) => {
-        if (filter === "popular") {
-          const aScore = popularityMap[a.item.key] ?? 0;
-          const bScore = popularityMap[b.item.key] ?? 0;
-          if (aScore !== bScore) {
-            return bScore - aScore;
-          }
-        }
-        if (a.item.kind !== b.item.kind) {
-          return a.item.kind === "vanilla" ? -1 : 1;
-        }
-        if (a.item.installed !== b.item.installed) {
-          return a.item.installed ? -1 : 1;
-        }
-        const keepOrder = sortNewestFirst(a.item, b.item);
-        if (keepOrder !== 0) {
-          return keepOrder;
-        }
-        return a.index - b.index;
-      })
-      .map(({ item }) => item);
-
-    return base;
-  }
+  $: filteredCatalogItems = filterCatalogItems(
+    catalogItems,
+    versionFilter,
+    favoriteKeys,
+    popularity
+  );
 
   function setVersionFilter(next: typeof versionFilter): void {
     versionFilter = next;
@@ -816,7 +815,7 @@
     if (item.kind === "optifine") {
       const option = optifineOptions.find((opt) => opt.id === item.id);
       if (!option) {
-        errorMessage = "Unknown OptiFine option.";
+        errorMessage = t("errUnknownOptifineOption");
         await appendLog("system", errorMessage);
         return;
       }
@@ -845,10 +844,11 @@
       await refreshVersions();
       selectedVersionId = result.versionId;
       storeSelectedVersionId(result.versionId);
-      await appendLog("system", `Minecraft ${result.versionId} instalado.`);
+      await appendLog("system", fillTemplate(t("logVersionInstalled"), { id: result.versionId }));
       vanillaInstallProgress = null;
+      await refreshDependencies();
     } catch (error) {
-      errorMessage = getErrorMessage(error, "Failed to install vanilla version.");
+      errorMessage = getErrorMessage(error, t("errInstallVanillaFailed"));
       statusMessage = errorMessage;
       await appendLog("system", errorMessage);
     } finally {
@@ -904,70 +904,12 @@
         clearSelectedVersionId();
       }
       await refreshVersions();
-      await appendLog("system", `Versión borrada: ${versionId}`);
+      await appendLog("system", fillTemplate(t("logVersionDeleted"), { id: versionId }));
+      await refreshDependencies();
     } catch (error) {
-      errorMessage = getErrorMessage(error, "Failed to delete version.");
+      errorMessage = getErrorMessage(error, t("errDeleteVersionFailed"));
       await appendLog("system", errorMessage);
     }
-  }
-
-  function buildCatalogItems(
-    installedVersions: MinecraftVersionSummary[],
-    releases: VanillaRelease[],
-    optifine: OptifineInstallOption[]
-  ): CatalogItem[] {
-    const installedById = new Map(installedVersions.map((v) => [v.id, v]));
-    const items: CatalogItem[] = [];
-
-    for (const release of releases) {
-      const key: CatalogKey = `vanilla:${release.id}`;
-      items.push({
-        key,
-        id: release.id,
-        kind: "vanilla",
-        title: `Minecraft ${release.id}`,
-        subtitle: "Vanilla",
-        installed: installedById.has(release.id),
-        installedVersionId: release.id
-      });
-    }
-
-    for (const option of optifine) {
-      const key: CatalogKey = `optifine:${option.id}`;
-      items.push({
-        key,
-        id: option.id,
-        kind: "optifine",
-        title: option.title,
-        subtitle: `${option.optifineVersion} · ${option.releaseKind}`,
-        installed: installedById.has(option.versionId),
-        installedVersionId: option.versionId,
-        recommendedJavaMajor: option.recommendedJavaMajor,
-        sourceUrl: option.sourceUrl
-      });
-    }
-
-    // Add locally installed versions that are not present in the catalog (offline/unknown/custom).
-    for (const version of installedVersions) {
-      const alreadyListed =
-        items.some((item) => item.installedVersionId === version.id) ||
-        items.some((item) => item.kind === "vanilla" && item.id === version.id);
-      if (alreadyListed) {
-        continue;
-      }
-      const key: CatalogKey = `vanilla:${version.id}`;
-      items.push({
-        key,
-        id: version.id,
-        kind: "vanilla",
-        title: `Minecraft ${version.id}`,
-        subtitle: "Local",
-        installed: true,
-        installedVersionId: version.id
-      });
-    }
-
-    return items;
   }
 
   onMount(() => {
@@ -1004,16 +946,8 @@
       });
 
       try {
-        optifineOptions = await listOptifineInstallOptions();
-        try {
-          vanillaReleases = await listVanillaReleases();
-        } catch (error) {
-          vanillaReleases = [];
-          await appendLog("system", getErrorMessage(error, "Failed to load vanilla release catalog."));
-        }
         await refreshDependencies();
         await hydrateMinecraftDir();
-        // Sync offline profile from storage in case it changed.
         offlineUsername = loadOfflineUsername() ?? DEFAULT_OFFLINE_USERNAME;
         offlineSkinUrl = loadOfflineSkinDataUrl();
         if (minecraftDir) {
@@ -1022,6 +956,29 @@
       } catch (error) {
         errorMessage = getErrorMessage(error, translate(locale, "errInitLauncher"));
         await appendLog("system", errorMessage);
+      }
+
+      const [optifineResult, vanillaResult] = await Promise.allSettled([
+        listOptifineInstallOptions(),
+        listVanillaReleases()
+      ]);
+
+      if (optifineResult.status === "fulfilled") {
+        optifineOptions = optifineResult.value;
+      } else {
+        await appendLog(
+          "system",
+          getErrorMessage(optifineResult.reason, t("errLoadOptifineCatalog"))
+        );
+      }
+
+      if (vanillaResult.status === "fulfilled") {
+        vanillaReleases = vanillaResult.value;
+      } else {
+        await appendLog(
+          "system",
+          getErrorMessage(vanillaResult.reason, t("errLoadVanillaCatalog"))
+        );
       }
     })();
 
@@ -1153,439 +1110,89 @@
   </header>
 
   <div class="app-container">
-    <main class="preview-area">
-      <section class="launch-stage" aria-labelledby="launcher-title">
-        <div class="stage-header">
-          <div>
-            <h1 id="launcher-title" class="stage-title-lockup">
-              <img class="stage-brand-mark" src={brandMarkUrl} alt="" decoding="async" />
-              <span class="stage-title-wordmark">MECHA <span class="logo-accent">LAUNCHER</span></span>
-            </h1>
-            <p class="kicker">{t("kicker")}</p>
-          </div>
-          <div class="stage-badge">
-            <svg class="app-icon" aria-hidden="true"><use href="#icon-user" /></svg>
-            <span>{offlineUsername || DEFAULT_OFFLINE_USERNAME}</span>
-          </div>
-        </div>
-
-        <div class="run-summary" aria-label={t("runSummaryAria")}>
-          <div>
-            <span>{t("runVersion")}</span>
-            <strong>{selectedVersionId || "—"}</strong>
-          </div>
-          <div>
-            <span>{t("runInstalled")}</span>
-            <strong>{versions.length}</strong>
-          </div>
-          <div>
-            <span>{t("runState")}</span>
-            <strong>
-              {installingOptifineOptionId || installingVanillaVersionId
-                ? t("stateInstalling")
-                : isLaunching
-                  ? t("stateLaunching")
-                  : t("stateReady")}
-            </strong>
-          </div>
-        </div>
-
-        <div class="stage-content split-stage">
-          <section class="stage-pane cat-pane" aria-label={t("panePreviewSr")}>
-            <div class="pane-title pane-title-icon" title={t("panePreviewTitle")}>
-              <svg class="app-icon" aria-hidden="true"><use href="#icon-cat" /></svg>
-              <span class="sr-only">{t("panePreviewSr")}</span>
-            </div>
-            <CatScene {themeMode} sceneAriaLabel={t("catSceneAria")} />
-          </section>
-
-          <section class="stage-pane" aria-label="Player preview">
-            <div class="pane-title pane-title-icon" title="Skin">
-              <svg class="app-icon" aria-hidden="true"><use href="#icon-cube" /></svg>
-              <span class="sr-only">Skin</span>
-            </div>
-            <PlayerScene skinUrl={offlineSkinUrl} sceneAriaLabel="Skin preview 3D" />
-          </section>
-
-          <section class="stage-pane log-pane" aria-label={t("paneOutputSr")}>
-            <div class="pane-title pane-title-icon log-title" title={t("paneOutputTitle")}>
-              <span class="pane-title-left">
-                <svg class="app-icon" aria-hidden="true"><use href="#icon-terminal" /></svg>
-                <span class="sr-only">{t("paneOutputSr")}</span>
-              </span>
-              <button
-                class="log-copy-btn"
-                type="button"
-                on:click={copyLog}
-                disabled={logLines.length === 0}
-              >
-                {copiedLog ? t("copyLogDone") : t("copyLog")}
-              </button>
-            </div>
-            <div bind:this={logViewport} class="log-console" role="log" aria-live="polite">
-              {#if logLines.length === 0}
-                <p class="log-placeholder">{t("logPlaceholder")}</p>
-              {:else}
-                {#each logLines as entry}
-                  <div class="log-line">
-                    <span class="log-source {entry.source}">{formatSourceLabel(entry.source)}</span>
-                    <span class="log-message">{entry.line}</span>
-                  </div>
-                {/each}
-              {/if}
-            </div>
-          </section>
-        </div>
-      </section>
-
-      <div class="preview-status-bar">
-        <span>{selectedVersionId || t("noVersionSelected")}</span>
-        <span>{statusMessage}</span>
-        <span>{minecraftDir.trim() || t("mcDirNotSet")}</span>
-      </div>
-    </main>
+    <LaunchStage
+      bind:logViewport
+      {brandMarkUrl}
+      {themeMode}
+      {offlineUsername}
+      defaultOfflineUsername={DEFAULT_OFFLINE_USERNAME}
+      {selectedVersionId}
+      versionCount={versions.length}
+      {isLaunching}
+      isInstalling={Boolean(installingOptifineOptionId || installingVanillaVersionId)}
+      {offlineSkinUrl}
+      {logLines}
+      {copiedLog}
+      {copyLog}
+      {formatSourceLabel}
+      {statusMessage}
+      {minecraftDir}
+      {t}
+    />
 
     <aside class="control-panel" aria-label={t("controlsAria")}>
-      {#if showDependencyWarnings}
-        <section class="panel-section deps-banner">
-          <div class="section-title accent">{t("depsTitle")}</div>
+      <DependencyBanner
+        {showDependencyWarnings}
+        {needsJavaAttention}
+        {needsGraphicsAttention}
+        {needsSelectedVersionJavaAttention}
+        {javaStatus}
+        {graphicsStatus}
+        {selectedSystemJavaMajorRequirement}
+        {isInstallingJava}
+        {isInstallingGraphicsDependency}
+        {t}
+        {fillTemplate}
+        onAutoInstallJava={handleAutoInstallJava}
+        onAutoInstallGraphicsDependency={handleAutoInstallGraphicsDependency}
+      />
 
-          {#if needsJavaAttention}
-            <div class="help-text">
-              <strong>{t("depsJavaTitle")}</strong>
-              {#if javaStatus?.installed && javaStatus?.detectedMajor && javaStatus.recommendedMajor && javaStatus.detectedMajor < javaStatus.recommendedMajor}
-                <div class="status-msg error">
-                  {fillTemplate(t("depsJavaNotRecommended"), {
-                    major: javaStatus.detectedMajor,
-                    recommended: javaStatus.recommendedMajor
-                  })}
-                </div>
-              {:else}
-                <div class="status-msg error">{t("depsJavaMissing")}</div>
-              {/if}
+      <OfflineProfilePanel
+        {offlineUsername}
+        {t}
+        onUsernameInput={handleUsernameChange}
+        onSkinChange={handleLocalSkinFile}
+      />
 
-              <div style="margin-top: 8px;">
-                <div><strong>{t("depsJavaHowTo")}</strong></div>
-                {#if javaStatus?.canAutoInstall}
-                  <div class="btn-row" style="margin-top: 8px;">
-                    <button class="btn" type="button" on:click={handleAutoInstallJava} disabled={isInstallingJava}>
-                      {isInstallingJava ? t("depsJavaInstalling") : t("depsJavaAutoInstall")}
-                    </button>
-                  </div>
-                  {#if javaStatus?.autoInstallHint}
-                    <div class="hint">{javaStatus.autoInstallHint}</div>
-                  {/if}
-                {/if}
-                {#if javaStatus?.suggestedLinuxCommands?.length}
-                  <div>{t("depsJavaLinuxNote")}</div>
-                  <pre class="log-console" style="min-height: unset; height: auto; padding: 10px; margin: 8px 0 0;">{javaStatus.suggestedLinuxCommands.join("\n")}</pre>
-                {/if}
-                {#if javaStatus?.suggestedWindowsLinks?.length}
-                  <div>{t("depsJavaWindowsNote")}</div>
-                  <ul style="margin: 8px 0 0; padding-left: 18px;">
-                    {#each javaStatus.suggestedWindowsLinks as link}
-                      <li><a href={link.url} target="_blank" rel="noreferrer">{link.label}</a></li>
-                    {/each}
-                  </ul>
-                {/if}
-              </div>
-            </div>
-          {/if}
+      <MinecraftDirectoryPanel
+        {minecraftDir}
+        {detectedMinecraftDir}
+        {errorMessage}
+        {statusMessage}
+        {missingVersionsDirPath}
+        {isLoadingVersions}
+        {isEnsuringVersionsDir}
+        {t}
+        onMinecraftDirInput={(path) => {
+          minecraftDir = path;
+        }}
+        onBrowse={handleBrowse}
+        onReload={refreshVersions}
+        onCreateVersionsDir={handleCreateVersionsDir}
+      />
 
-          {#if needsSelectedVersionJavaAttention && javaStatus && selectedInstalledCatalogItem?.recommendedJavaMajor}
-            <div class="help-text dependency-subcard">
-              <strong>{t("depsJavaTitle")}</strong>
-              <div class="status-msg error">
-                {fillTemplate(t("depsJavaNotRecommended"), {
-                  major: javaStatus.detectedMajor ?? "—",
-                  recommended: selectedInstalledCatalogItem.recommendedJavaMajor
-                })}
-              </div>
-              <div style="margin-top: 8px;">
-                <div><strong>{t("depsJavaHowTo")}</strong></div>
-                {#if javaStatus.suggestedLinuxCommands?.length}
-                  <div>{t("depsJavaLinuxNote")}</div>
-                  <pre class="log-console" style="min-height: unset; height: auto; padding: 10px; margin: 8px 0 0;">{javaStatus.suggestedLinuxCommands.join("\n")}</pre>
-                {/if}
-                {#if javaStatus.suggestedWindowsLinks?.length}
-                  <div>{t("depsJavaWindowsNote")}</div>
-                  <ul style="margin: 8px 0 0; padding-left: 18px;">
-                    {#each javaStatus.suggestedWindowsLinks as link}
-                      <li><a href={link.url} target="_blank" rel="noreferrer">{link.label}</a></li>
-                    {/each}
-                  </ul>
-                {/if}
-              </div>
-            </div>
-          {/if}
+      <VersionCatalogPanel
+        {versionFilter}
+        {filteredCatalogItems}
+        {selectedVersionId}
+        {isLaunching}
+        {installingOptifineOptionId}
+        {installingVanillaVersionId}
+        {canPlay}
+        {installProgress}
+        {vanillaInstallProgress}
+        {installPercent}
+        {t}
+        {isFavorite}
+        onSetVersionFilter={setVersionFilter}
+        onSelectCatalogItem={selectCatalogItem}
+        onToggleFavorite={toggleFavorite}
+        onDownload={handleDownload}
+        onDelete={handleDelete}
+        onPlay={handlePlay}
+      />
 
-          {#if needsGraphicsAttention}
-            <div class="help-text dependency-subcard">
-              <strong>{t("depsGraphicsTitle")}</strong>
-              {#if graphicsStatus?.installed && !graphicsStatus?.usable}
-                <div class="status-msg error">{t("depsGraphicsNotUsable")}</div>
-              {:else}
-                <div class="status-msg error">{t("depsGraphicsMissing")}</div>
-              {/if}
-
-              <div style="margin-top: 8px;">
-                <div><strong>{t("depsJavaHowTo")}</strong></div>
-                {#if graphicsStatus?.canAutoInstall}
-                  <div class="btn-row" style="margin-top: 8px;">
-                    <button
-                      class="btn"
-                      type="button"
-                      on:click={handleAutoInstallGraphicsDependency}
-                      disabled={isInstallingGraphicsDependency}
-                    >
-                      {isInstallingGraphicsDependency
-                        ? t("depsGraphicsInstalling")
-                        : t("depsGraphicsAutoInstall")}
-                    </button>
-                  </div>
-                  {#if graphicsStatus?.autoInstallHint}
-                    <div class="hint">{graphicsStatus.autoInstallHint}</div>
-                  {/if}
-                {/if}
-                {#if graphicsStatus?.suggestedLinuxCommands?.length}
-                  <div>{t("depsJavaLinuxNote")}</div>
-                  <pre class="log-console" style="min-height: unset; height: auto; padding: 10px; margin: 8px 0 0;">{graphicsStatus.suggestedLinuxCommands.join("\n")}</pre>
-                {/if}
-              </div>
-            </div>
-          {/if}
-        </section>
-      {/if}
-
-      <section class="panel-section">
-        <div class="section-title accent">
-          <svg class="app-icon" aria-hidden="true"><use href="#icon-user" /></svg>
-          Usuario (offline)
-        </div>
-
-        <input
-          class="text-input"
-          type="text"
-          value={offlineUsername}
-          on:input={(event) => handleUsernameChange((event.currentTarget as HTMLInputElement).value)}
-          placeholder="Nombre de usuario"
-          aria-label="Nombre de usuario"
-          style="margin-top: 10px;"
-        />
-
-        <div style="margin-top: 10px;">
-          <div class="hint">Skin (preview en el launcher)</div>
-          <input
-            class="text-input"
-            type="file"
-            accept="image/png"
-            on:change={(event) =>
-              void handleLocalSkinFile((event.currentTarget as HTMLInputElement).files?.[0] ?? null)}
-            aria-label="Elegir skin PNG"
-          />
-        </div>
-      </section>
-
-      <section class="panel-section">
-        <div class="section-title accent">
-          <svg class="app-icon" aria-hidden="true"><use href="#icon-folder" /></svg>
-          {t("gameDirectory")}
-        </div>
-        <p class="help-text">{@html t("gameDirectoryHelp")}</p>
-
-        <input
-          bind:value={minecraftDir}
-          class="text-input"
-          type="text"
-          placeholder={t("mcPathPlaceholder")}
-          aria-label={t("minecraftDirAria")}
-        />
-
-        <div class="btn-row">
-          <button class="btn" type="button" on:click={handleBrowse}>
-            <svg class="app-icon" aria-hidden="true"><use href="#icon-folder" /></svg>
-            {t("browse")}
-          </button>
-          <button class="btn" type="button" on:click={refreshVersions} disabled={isLoadingVersions}>
-            <svg class="app-icon" aria-hidden="true"><use href="#icon-refresh" /></svg>
-            {isLoadingVersions ? t("reloading") : t("reload")}
-          </button>
-        </div>
-
-        {#if detectedMinecraftDir}
-          <p class="hint">{t("detectedDefault")} {detectedMinecraftDir}</p>
-        {/if}
-
-        {#if errorMessage}
-          <p class="status-msg error">{errorMessage}</p>
-          {#if missingVersionsDirPath}
-            <div class="btn-row">
-              <button
-                class="btn"
-                type="button"
-                on:click={handleCreateVersionsDir}
-                disabled={isEnsuringVersionsDir}
-              >
-                {isEnsuringVersionsDir ? t("creatingVersionsDir") : t("createVersionsDir")}
-              </button>
-            </div>
-          {/if}
-        {:else}
-          <p class="status-msg info">{statusMessage}</p>
-        {/if}
-      </section>
-
-      <section class="panel-section versions-section">
-        <div class="section-title accent">
-          <svg class="app-icon" aria-hidden="true"><use href="#icon-list" /></svg>
-          {t("versionsCatalogTitle")}
-        </div>
-
-        <div class="version-filters" role="tablist" aria-label={t("versionsCatalogTitle")}>
-          <button class:active={versionFilter === "installed"} class="chip" type="button" on:click={() => setVersionFilter("installed")}>
-            {t("versionsFilterInstalled")}
-          </button>
-          <button class:active={versionFilter === "all"} class="chip" type="button" on:click={() => setVersionFilter("all")}>
-            {t("versionsFilterAll")}
-          </button>
-          <button class:active={versionFilter === "popular"} class="chip" type="button" on:click={() => setVersionFilter("popular")}>
-            {t("versionsFilterPopular")}
-          </button>
-          <button class:active={versionFilter === "favorites"} class="chip" type="button" on:click={() => setVersionFilter("favorites")}>
-            {t("versionsFilterFavorites")}
-          </button>
-          <button class:active={versionFilter === "vanilla"} class="chip" type="button" on:click={() => setVersionFilter("vanilla")}>
-            {t("versionsFilterVanilla")}
-          </button>
-          <button class:active={versionFilter === "optifine"} class="chip" type="button" on:click={() => setVersionFilter("optifine")}>
-            {t("versionsFilterOptifine")}
-          </button>
-        </div>
-
-        <div class="version-list" role="list" aria-label={t("versionsListAria")}>
-          {#if filteredCatalogItems.length === 0}
-            <div class="empty-state">
-              <p>{t("versionsEmptyTitle")}</p>
-              <span>{@html t("versionsEmptyDetail")}</span>
-            </div>
-          {:else}
-            {#each filteredCatalogItems as item (item.key)}
-              {@const selected = item.installedVersionId === selectedVersionId}
-              {@const busy = Boolean(isLaunching || installingOptifineOptionId || installingVanillaVersionId)}
-              <div class:selected class="catalog-item" role="listitem">
-                <button
-                  class="catalog-main"
-                  type="button"
-                  on:click={() => selectCatalogItem(item)}
-                  disabled={!item.installed || busy}
-                >
-                  <span class="version-name">{item.title}</span>
-                  <span class="version-meta">
-                    {item.subtitle}
-                    {#if item.kind === "optifine" && item.recommendedJavaMajor}
-                      · Java {item.recommendedJavaMajor}
-                    {/if}
-                    {#if item.installed}
-                      · {t("optifineInstalled")}
-                    {/if}
-                  </span>
-                </button>
-
-                <div class="catalog-actions">
-                  <button
-                    class:active={isFavorite(item)}
-                    class="icon-btn"
-                    type="button"
-                    aria-label={t("versionsFilterFavorites")}
-                    on:click={() => toggleFavorite(item)}
-                    disabled={busy}
-                  >
-                    <svg class="app-icon" aria-hidden="true"><use href="#icon-star" /></svg>
-                  </button>
-
-                  {#if item.installed}
-                    <button
-                      class="icon-btn"
-                      type="button"
-                      aria-label={t("versionActionDelete")}
-                      on:click={() => handleDelete(item)}
-                      disabled={busy}
-                    >
-                      <svg class="app-icon" aria-hidden="true"><use href="#icon-trash" /></svg>
-                    </button>
-                  {:else}
-                    <button
-                      class="icon-btn"
-                      type="button"
-                      aria-label={t("versionActionDownload")}
-                      on:click={() => handleDownload(item)}
-                      disabled={busy}
-                    >
-                      <svg class="app-icon" aria-hidden="true"><use href="#icon-download" /></svg>
-                    </button>
-                  {/if}
-                </div>
-              </div>
-            {/each}
-          {/if}
-        </div>
-
-        {#if installProgress}
-          <div class="install-progress" aria-label={t("optifineProgressAria")} role="status">
-            <div class="install-progress-copy">
-              <span>{installProgress.stage}</span>
-              <strong>{installProgress.message}</strong>
-            </div>
-            <div class:indeterminate={installPercent === null} class="progress-track">
-              <span style={`width: ${installPercent ?? 100}%`}></span>
-            </div>
-          </div>
-        {/if}
-
-        {#if vanillaInstallProgress}
-          {@const percent = vanillaInstallProgress.current && vanillaInstallProgress.total
-            ? Math.min(100, Math.round((vanillaInstallProgress.current / vanillaInstallProgress.total) * 100))
-            : null}
-          <div class="install-progress" role="status">
-            <div class="install-progress-copy">
-              <span>{vanillaInstallProgress.stage}</span>
-              <strong>{vanillaInstallProgress.message}</strong>
-            </div>
-            <div class:indeterminate={percent === null} class="progress-track">
-              <span style={`width: ${percent ?? 100}%`}></span>
-            </div>
-          </div>
-        {/if}
-
-        <button class:active={canPlay} class="btn primary play-button" type="button" on:click={handlePlay} disabled={!canPlay}>
-          <svg class="app-icon" aria-hidden="true"><use href="#icon-play" /></svg>
-          {isLaunching ? t("launching") : t("play")}
-        </button>
-      </section>
-
-      <section class="panel-section panel-lang">
-        <div class="lang-row">
-          <span class="lang-label">{t("languageLabel")}</span>
-          <div class="lang-toggle" role="group" aria-label={t("languageLabel")}>
-            <button
-              class:active={locale === "es"}
-              class="lang-btn"
-              type="button"
-              on:click={() => setLocale("es")}
-            >
-              {t("languageEs")}
-            </button>
-            <button
-              class:active={locale === "en"}
-              class="lang-btn"
-              type="button"
-              on:click={() => setLocale("en")}
-            >
-              {t("languageEn")}
-            </button>
-          </div>
-        </div>
-      </section>
+      <LanguagePanel {locale} {t} onSetLocale={setLocale} />
     </aside>
   </div>
 </div>

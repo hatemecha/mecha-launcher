@@ -4,12 +4,14 @@
 
   export let skinUrl: string | null = null;
   export let sceneAriaLabel = "";
+  export let fallbackMessage = "";
 
   let container: HTMLDivElement | null = null;
   let canvasEl: HTMLCanvasElement | null = null;
   let viewer: import("skinview3d").SkinViewer | null = null;
   let resizeObserver: ResizeObserver | null = null;
   let currentSkinUrl = "";
+  let loadFailed = false;
 
   function applySize(): void {
     if (!viewer || !container) {
@@ -30,8 +32,14 @@
     if (effectiveUrl === currentSkinUrl) {
       return;
     }
-    currentSkinUrl = effectiveUrl;
-    await viewer.loadSkin(effectiveUrl, { model: "default" });
+    try {
+      currentSkinUrl = effectiveUrl;
+      await viewer.loadSkin(effectiveUrl, { model: "default" });
+      loadFailed = false;
+    } catch (error) {
+      loadFailed = true;
+      console.error("Failed to load player skin preview:", error);
+    }
   }
 
   onMount(() => {
@@ -83,9 +91,12 @@
   });
 </script>
 
-<div class="cat-scene" aria-label={sceneAriaLabel || "Player preview"}>
+<div class="cat-scene" aria-label={sceneAriaLabel}>
   <div bind:this={container} class="cat-canvas">
     <canvas bind:this={canvasEl}></canvas>
   </div>
+  {#if loadFailed}
+    <div class="scene-fallback" role="status">{fallbackMessage}</div>
+  {/if}
 </div>
 

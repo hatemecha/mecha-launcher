@@ -7,29 +7,11 @@ export interface MinecraftVersionSummary {
   javaMajorVersion?: number | null;
 }
 
-export type AccountKind = "offline";
-export type SkinSource = "none" | "local";
-
-export interface AccountSkin {
-  source: SkinSource;
-  /**
-   * For `local`: a data URL (e.g. "data:image/png;base64,...") so we can preview without FS access.
-   */
-  value?: string | null;
-}
-
-export interface Account {
-  id: string;
-  kind: AccountKind;
-  label: string;
-  username: string;
-  skin?: AccountSkin | null;
-}
-
 export interface LaunchRequest {
   minecraftDir: string;
   versionId: string;
   username: string;
+  requiredJavaMajor?: number | null;
 }
 
 export interface LaunchResponse {
@@ -57,15 +39,20 @@ export interface DependencyLink {
   url: string;
 }
 
+export interface JavaDependencyRequest {
+  requiredMajor?: number | null;
+}
+
 export interface JavaDependencyStatus {
   installed: boolean;
+  meetsRequirement: boolean;
   detectedMajor?: number | null;
   detectedRaw?: string | null;
   suggestedLinuxCommands?: string[] | null;
   suggestedWindowsLinks?: DependencyLink[] | null;
   canAutoInstall?: boolean | null;
   autoInstallHint?: string | null;
-  recommendedMajor?: number | null;
+  requiredMajor?: number | null;
 }
 
 export interface GraphicsDependencyStatus {

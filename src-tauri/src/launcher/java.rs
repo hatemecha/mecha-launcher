@@ -11,6 +11,7 @@ use crate::launcher::{manifest::JavaVersion, LauncherError, LauncherResult};
 pub fn resolve_java_executable(
     minecraft_dir: &Path,
     java_version: Option<&JavaVersion>,
+    required_major: Option<u32>,
 ) -> LauncherResult<PathBuf> {
     if let Some(java_version) = java_version {
         if let Some(runtime_java) = find_runtime_java(minecraft_dir, &java_version.component) {
@@ -19,8 +20,6 @@ pub fn resolve_java_executable(
     }
 
     let system_candidate = if cfg!(windows) { "java.exe" } else { "java" };
-    let required_major = java_version.map(|version| version.major_version);
-
     let detected_major = detect_java_major(Path::new(system_candidate)).ok_or_else(|| {
         LauncherError::new(
             "Unable to find a compatible Java runtime in .minecraft/runtime or in PATH.",
@@ -28,14 +27,22 @@ pub fn resolve_java_executable(
     })?;
 
     if let Some(required_major) = required_major {
-        if detected_major != required_major {
+        if !java_major_satisfies_requirement(detected_major, required_major) {
             return Err(LauncherError::new(format!(
-                "The system Java runtime reports major version {detected_major}, but the selected version requires Java {required_major}."
+                "The system Java runtime reports major version {detected_major}, but the selected version requires Java {required_major} or newer."
             )));
         }
     }
 
     Ok(PathBuf::from(system_candidate))
+}
+
+pub fn java_major_satisfies_requirement(detected_major: u32, required_major: u32) -> bool {
+    if required_major <= 8 {
+        detected_major == required_major
+    } else {
+        detected_major >= required_major
+    }
 }
 
 fn find_runtime_java(minecraft_dir: &Path, component: &str) -> Option<PathBuf> {
@@ -81,7 +88,7 @@ fn detect_java_major(java_executable: &Path) -> Option<u32> {
 mod tests {
     use regex::Regex;
 
-    use super::detect_java_major;
+    use super::{detect_java_major, java_major_satisfies_requirement};
 
     #[test]
     fn parses_java_8_version_output() {
@@ -94,5 +101,18 @@ mod tests {
     #[test]
     fn detect_java_major_returns_none_for_missing_binary() {
         assert!(detect_java_major(std::path::Path::new("definitely-not-a-java-binary")).is_none());
+    }
+
+    #[test]
+    fn java_8_requires_exact_match() {
+        assert!(java_major_satisfies_requirement(8, 8));
+        assert!(!java_major_satisfies_requirement(17, 8));
+    }
+
+    #[test]
+    fn modern_java_versions_allow_newer_runtimes() {
+        assert!(java_major_satisfies_requirement(17, 16));
+        assert!(java_major_satisfies_requirement(21, 17));
+        assert!(!java_major_satisfies_requirement(8, 17));
     }
 }

@@ -19,6 +19,7 @@
 
   export let themeMode: ThemeMode = "dark";
   export let sceneAriaLabel = "";
+  export let fallbackMessage = "";
 
   let container: HTMLDivElement | null = null;
   let three: typeof import("three") | null = null;
@@ -37,6 +38,7 @@
   let isDestroyed = false;
   let isSceneVisible = true;
   let lastFrameTime = 0;
+  let loadFailed = false;
 
   $: modelUrl = themeMode === "light" ? blackCatModelUrl : whiteCatModelUrl;
 
@@ -214,8 +216,10 @@
       centerModel(model);
       pivot.add(model);
       currentModel = model;
+      loadFailed = false;
       renderScene();
     } catch (error) {
+      loadFailed = true;
       console.error("Failed to load cat model:", error);
     }
   }
@@ -325,6 +329,9 @@
   });
 </script>
 
-<div class="cat-scene" aria-label={sceneAriaLabel || "Preview"}>
+<div class="cat-scene" aria-label={sceneAriaLabel}>
   <div bind:this={container} class="cat-canvas"></div>
+  {#if loadFailed}
+    <div class="scene-fallback" role="status">{fallbackMessage}</div>
+  {/if}
 </div>

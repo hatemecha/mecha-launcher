@@ -11,7 +11,8 @@
   },
   "app": {
     "security": {
-      "csp": null
+      "csp": "default-src 'self' ipc: http://ipc.localhost; connect-src 'self' ipc: http://ipc.localhost https://piston-meta.mojang.com https://launchermeta.mojang.com https://libraries.minecraft.net https://resources.download.minecraft.net https://optifine.net; img-src 'self' asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'",
+      "devCsp": "default-src 'self' ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1421; connect-src 'self' ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1421 https://piston-meta.mojang.com https://launchermeta.mojang.com https://libraries.minecraft.net https://resources.download.minecraft.net https://optifine.net; img-src 'self' asset: http://asset.localhost data: blob: http://localhost:1420; style-src 'self' 'unsafe-inline' http://localhost:1420; font-src 'self' data: http://localhost:1420; object-src 'none'; base-uri 'self'; form-action 'self'"
     },
     "windows": [
       {

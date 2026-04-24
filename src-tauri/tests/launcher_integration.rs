@@ -128,6 +128,7 @@ fn prepare_launch_supports_modern_and_legacy_manifests() {
             minecraft_dir: minecraft_dir.to_string_lossy().to_string(),
             version_id: "modern".to_string(),
             username: "Player".to_string(),
+            required_java_major: None,
         },
         "modern-launch".to_string(),
     )
@@ -145,6 +146,7 @@ fn prepare_launch_supports_modern_and_legacy_manifests() {
             minecraft_dir: minecraft_dir.to_string_lossy().to_string(),
             version_id: "legacy".to_string(),
             username: "Player".to_string(),
+            required_java_major: None,
         },
         "legacy-launch".to_string(),
     )
@@ -203,6 +205,7 @@ fn prepare_launch_supports_values_alias_and_offline_placeholders() {
             minecraft_dir: minecraft_dir.to_string_lossy().to_string(),
             version_id: "modern-values".to_string(),
             username: "Player".to_string(),
+            required_java_major: None,
         },
         "modern-values-launch".to_string(),
     )
@@ -274,6 +277,7 @@ fn prepare_launch_supports_legacy_library_artifacts_and_skips_native_only_classp
             minecraft_dir: minecraft_dir.to_string_lossy().to_string(),
             version_id: "legacy-native-only".to_string(),
             username: "Player".to_string(),
+            required_java_major: None,
         },
         "legacy-native-only-launch".to_string(),
     )
@@ -386,6 +390,7 @@ fn prepare_launch_reports_actionable_missing_inputs() {
             minecraft_dir: minecraft_dir.to_string_lossy().to_string(),
             version_id: "missing-runtime".to_string(),
             username: "Player".to_string(),
+            required_java_major: None,
         },
         "runtime".to_string(),
     )
@@ -397,6 +402,7 @@ fn prepare_launch_reports_actionable_missing_inputs() {
             minecraft_dir: minecraft_dir.to_string_lossy().to_string(),
             version_id: "missing-library".to_string(),
             username: "Player".to_string(),
+            required_java_major: None,
         },
         "library".to_string(),
     )
@@ -408,6 +414,7 @@ fn prepare_launch_reports_actionable_missing_inputs() {
             minecraft_dir: minecraft_dir.to_string_lossy().to_string(),
             version_id: "missing-assets".to_string(),
             username: "Player".to_string(),
+            required_java_major: None,
         },
         "assets".to_string(),
     )
@@ -421,6 +428,7 @@ fn prepare_launch_reports_actionable_missing_inputs() {
             minecraft_dir: minecraft_dir.to_string_lossy().to_string(),
             version_id: "missing-natives".to_string(),
             username: "Player".to_string(),
+            required_java_major: None,
         },
         "natives".to_string(),
     )

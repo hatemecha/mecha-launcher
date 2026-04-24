@@ -1,9 +1,19 @@
 fn main() {
     let attributes = tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
+            "auto_install_graphics_dependency",
+            "auto_install_java",
             "browse_minecraft_dir",
+            "check_graphics_dependency",
+            "check_java_dependency",
+            "delete_installed_version",
             "detect_default_minecraft_dir",
+            "ensure_versions_dir",
+            "install_optifine_version",
+            "install_vanilla_version",
             "launch_version",
+            "list_optifine_install_options",
+            "list_vanilla_releases",
             "list_versions",
         ]),
     );

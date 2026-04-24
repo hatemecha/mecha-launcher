@@ -265,10 +265,41 @@ fn recommended_java_for_minecraft(version: &str) -> u32 {
     8
 }
 
+fn optifine_edition_rank(edition: &str) -> (String, u32, bool, u32, String) {
+    let without_prefix = edition.strip_prefix("HD_U_").unwrap_or(edition);
+    let (base, prerelease) = without_prefix
+        .split_once("_pre")
+        .map(|(base, prerelease)| (base, prerelease.parse::<u32>().ok().unwrap_or(0)))
+        .unwrap_or((without_prefix, 0));
+
+    let pattern = Regex::new(r#"^(?P<branch>[A-Za-z]+)(?P<number>\d+)?$"#)
+        .expect("valid OptiFine edition regex");
+    let captures = pattern.captures(base);
+    let branch = captures
+        .as_ref()
+        .and_then(|captures| captures.name("branch"))
+        .map(|value| value.as_str().to_string())
+        .unwrap_or_else(|| base.to_string());
+    let number = captures
+        .as_ref()
+        .and_then(|captures| captures.name("number"))
+        .and_then(|value| value.as_str().parse::<u32>().ok())
+        .unwrap_or(0);
+
+    (
+        branch,
+        number,
+        prerelease == 0,
+        prerelease,
+        without_prefix.to_string(),
+    )
+}
+
 fn parse_optifine_downloads_html(html: &str) -> Vec<OptifineInstallOption> {
-    let pattern =
-        Regex::new(r#"OptiFine_(?P<mc>\d+\.\d+(?:\.\d+)?)_(?P<edition>HD_U_[A-Za-z0-9]+)\.jar"#)
-            .expect("valid regex");
+    let pattern = Regex::new(
+        r#"OptiFine_(?P<mc>\d+\.\d+(?:\.\d+)?)_(?P<edition>HD_U_[A-Za-z0-9_]+)\.jar"#,
+    )
+    .expect("valid regex");
 
     let mut by_mc: HashMap<String, OptifineInstallOption> = HashMap::new();
 
@@ -276,30 +307,36 @@ fn parse_optifine_downloads_html(html: &str) -> Vec<OptifineInstallOption> {
         let Some(mc) = caps.name("mc").map(|value| value.as_str().to_string()) else {
             continue;
         };
-        if by_mc.contains_key(&mc) {
-            continue;
-        }
         let Some(edition) = caps.name("edition").map(|value| value.as_str().to_string()) else {
             continue;
         };
         let file_name = format!("OptiFine_{mc}_{edition}.jar");
-
-        by_mc.insert(
-            mc.clone(),
-            OptifineInstallOption {
-                id: file_name.clone(),
-                minecraft_version: mc.clone(),
-                optifine_version: format!("OptiFine_{mc}_{edition}"),
-                edition: edition.clone(),
-                file_name: file_name.clone(),
-                version_id: format!("{mc}-OptiFine_{edition}"),
-                title: format!("Minecraft {mc}"),
-                summary: format!("Última build de OptiFine para Minecraft {mc}."),
-                release_kind: "Última".to_string(),
-                recommended_java_major: recommended_java_for_minecraft(&mc),
-                source_url: format!("{OPTIFINE_ADLOAD_BASE_URL}?f={file_name}"),
+        let candidate = OptifineInstallOption {
+            id: file_name.clone(),
+            minecraft_version: mc.clone(),
+            optifine_version: format!("OptiFine_{mc}_{edition}"),
+            edition: edition.clone(),
+            file_name: file_name.clone(),
+            version_id: format!("{mc}-OptiFine_{edition}"),
+            title: format!("Minecraft {mc}"),
+            summary: format!("Best available OptiFine build for Minecraft {mc}."),
+            release_kind: if edition.contains("_pre") {
+                "Preview".to_string()
+            } else {
+                "Stable".to_string()
             },
-        );
+            recommended_java_major: recommended_java_for_minecraft(&mc),
+            source_url: format!("{OPTIFINE_ADLOAD_BASE_URL}?f={file_name}"),
+        };
+
+        let should_replace = by_mc
+            .get(&mc)
+            .map(|current| optifine_edition_rank(&candidate.edition) > optifine_edition_rank(&current.edition))
+            .unwrap_or(true);
+
+        if should_replace {
+            by_mc.insert(mc, candidate);
+        }
     }
 
     let mut options = by_mc.into_values().collect::<Vec<_>>();
@@ -395,7 +432,7 @@ pub async fn install_vanilla_version(
         &progress,
         version_id_str,
         "prepare",
-        "Preparando carpetas de Minecraft.",
+        "Preparing Minecraft directories.",
         None,
         None,
     );
@@ -416,7 +453,7 @@ pub async fn install_vanilla_version(
         &progress,
         version_id_str,
         "minecraft",
-        &format!("Descargando manifiesto de Minecraft {version_id_str}."),
+        &format!("Downloading Minecraft {version_id_str} manifest."),
         None,
         None,
     );
@@ -467,7 +504,7 @@ pub async fn install_vanilla_version(
         &progress,
         version_id_str,
         "done",
-        &format!("Minecraft {version_id_str} quedo listo para jugar."),
+        &format!("Minecraft {version_id_str} is ready to play."),
         Some(1),
         Some(1),
     );
@@ -494,7 +531,7 @@ pub async fn install_optifine_version(
         &progress,
         &option.id,
         "prepare",
-        "Preparando carpetas de Minecraft.",
+        "Preparing Minecraft directories.",
         None,
         None,
     );
@@ -517,7 +554,7 @@ pub async fn install_optifine_version(
         &progress,
         &option.id,
         "minecraft",
-        &format!("Descargando manifiesto de Minecraft {}.", option.minecraft_version),
+        &format!("Downloading Minecraft {} manifest.", option.minecraft_version),
         None,
         None,
     );
@@ -551,7 +588,7 @@ pub async fn install_optifine_version(
         &progress,
         &option.id,
         "optifine",
-        "OptiFine aplicado. Verificando archivos.",
+        "OptiFine applied. Verifying files.",
         Some(1),
         Some(1),
     );
@@ -561,7 +598,7 @@ pub async fn install_optifine_version(
         &progress,
         &option.id,
         "done",
-        &format!("{} quedo listo para jugar.", option.version_id),
+        &format!("{} is ready to play.", option.version_id),
         Some(1),
         Some(1),
     );
@@ -618,7 +655,7 @@ async fn install_base_manifest_and_client(
         progress,
         job_id,
         "minecraft",
-        &format!("Descargando cliente base {}.", manifest.id),
+        &format!("Downloading base client {}.", manifest.id),
         Some(0),
         Some(1),
     );
@@ -636,7 +673,7 @@ async fn install_base_manifest_and_client(
         progress,
         job_id,
         "minecraft",
-        &format!("Cliente base {} listo.", manifest.id),
+        &format!("Base client {} is ready.", manifest.id),
         Some(1),
         Some(1),
     );
@@ -659,7 +696,7 @@ async fn install_libraries(
         progress,
         job_id,
         "libraries",
-        &format!("Preparando {} librerias.", total),
+        &format!("Preparing {total} libraries."),
         Some(0),
         Some(total),
     );
@@ -689,7 +726,7 @@ async fn install_libraries(
                 progress,
                 job_id,
                 "libraries",
-                &format!("Librerias listas: {current}/{total}."),
+                &format!("Libraries ready: {current}/{total}."),
                 Some(current),
                 Some(total),
             );
@@ -714,7 +751,7 @@ async fn install_assets(
         progress,
         job_id,
         "assets",
-        &format!("Descargando indice de assets {}.", asset_index.id),
+        &format!("Downloading asset index {}.", asset_index.id),
         None,
         None,
     );
@@ -740,7 +777,7 @@ async fn install_assets(
         progress,
         job_id,
         "assets",
-        &format!("Preparando {} assets.", total),
+        &format!("Preparing {total} assets."),
         Some(0),
         Some(total),
     );
@@ -774,7 +811,7 @@ async fn install_assets(
                 progress,
                 job_id,
                 "assets",
-                &format!("Assets listos: {current}/{total}."),
+                &format!("Assets ready: {current}/{total}."),
                 Some(current),
                 Some(total),
             );
@@ -803,7 +840,7 @@ async fn install_java_runtime(
         job_id,
         "runtime",
         &format!(
-            "Preparando runtime {} (Java {}).",
+            "Preparing runtime {} (Java {}).",
             java_version.component, java_version.major_version
         ),
         None,
@@ -876,7 +913,7 @@ async fn install_java_runtime(
                 progress,
                 job_id,
                 "runtime",
-                &format!("Runtime Java listo: {current}/{total}."),
+                &format!("Java runtime ready: {current}/{total}."),
                 Some(current),
                 Some(total),
             );
@@ -906,7 +943,7 @@ async fn download_optifine_installer(
         progress,
         &option.id,
         "optifine",
-        &format!("Buscando descarga oficial de {}.", option.file_name),
+        &format!("Locating the official download for {}.", option.file_name),
         None,
         None,
     );
@@ -923,7 +960,7 @@ async fn download_optifine_installer(
         progress,
         &option.id,
         "optifine",
-        &format!("Descargando {}.", option.file_name),
+        &format!("Downloading {}.", option.file_name),
         Some(0),
         Some(1),
     );
@@ -942,7 +979,7 @@ async fn download_optifine_installer(
         progress,
         &option.id,
         "optifine",
-        "Instalador OptiFine descargado.",
+        "OptiFine installer downloaded.",
         Some(1),
         Some(1),
     );
@@ -960,7 +997,7 @@ async fn run_optifine_installer(
         progress,
         &option.id,
         "optifine",
-        "Aplicando instalador OptiFine.",
+        "Applying the OptiFine installer.",
         None,
         None,
     );
@@ -1605,6 +1642,21 @@ mod tests {
                 "1.16.5-OptiFine_HD_U_G8"
             ]
         );
+    }
+
+    #[test]
+    fn prefers_stable_optifine_builds_over_prereleases_for_same_branch() {
+        let html = r#"
+          <a href="adloadx?f=OptiFine_1.20.4_HD_U_I7_pre2.jar">Preview</a>
+          <a href="adloadx?f=OptiFine_1.20.4_HD_U_I7.jar">Stable</a>
+          <a href="adloadx?f=OptiFine_1.20.4_HD_U_I6.jar">Older</a>
+        "#;
+
+        let options = parse_optifine_downloads_html(html);
+
+        assert_eq!(options.len(), 1);
+        assert_eq!(options[0].edition, "HD_U_I7");
+        assert_eq!(options[0].release_kind, "Stable");
     }
 
     #[test]

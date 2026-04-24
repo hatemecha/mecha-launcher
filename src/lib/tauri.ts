@@ -6,6 +6,7 @@ import type {
   LaunchResponse,
   DependencyInstallResult,
   GraphicsDependencyStatus,
+  JavaDependencyRequest,
   JavaDependencyStatus,
   LauncherLogEvent,
   LauncherStatusEvent,
@@ -29,16 +30,20 @@ export async function browseMinecraftDir(): Promise<string | null> {
   return invoke<string | null>("browse_minecraft_dir");
 }
 
-export async function checkJavaDependency(): Promise<JavaDependencyStatus> {
-  return invoke<JavaDependencyStatus>("check_java_dependency");
+export async function checkJavaDependency(
+  request?: JavaDependencyRequest
+): Promise<JavaDependencyStatus> {
+  return invoke<JavaDependencyStatus>("check_java_dependency", { request });
 }
 
 export async function checkGraphicsDependency(): Promise<GraphicsDependencyStatus> {
   return invoke<GraphicsDependencyStatus>("check_graphics_dependency");
 }
 
-export async function autoInstallJava(): Promise<DependencyInstallResult> {
-  return invoke<DependencyInstallResult>("auto_install_java");
+export async function autoInstallJava(
+  request?: JavaDependencyRequest
+): Promise<DependencyInstallResult> {
+  return invoke<DependencyInstallResult>("auto_install_java", { request });
 }
 
 export async function autoInstallGraphicsDependency(): Promise<DependencyInstallResult> {

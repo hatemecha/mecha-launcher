@@ -45,13 +45,14 @@ impl EventSink for TauriEventSink {
 #[serde(rename_all = "camelCase")]
 pub struct JavaDependencyStatus {
     pub installed: bool,
+    pub meets_requirement: bool,
     pub detected_major: Option<u32>,
     pub detected_raw: Option<String>,
     pub suggested_linux_commands: Option<Vec<String>>,
     pub suggested_windows_links: Option<Vec<DependencyLink>>,
     pub can_auto_install: bool,
     pub auto_install_hint: Option<String>,
-    pub recommended_major: u32,
+    pub required_major: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -83,6 +84,13 @@ pub struct DependencyInstallResult {
     pub exit_code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct JavaDependencyRequest {
+    #[serde(default)]
+    pub required_major: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -143,9 +151,17 @@ fn parse_os_release_value(contents: &str, key: &str) -> Option<String> {
     None
 }
 
-fn suggested_linux_java_install_commands() -> Option<Vec<String>> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LinuxDistro {
+    Fedora,
+    Debian,
+    Arch,
+    Other,
+}
+
+fn detect_linux_distro() -> LinuxDistro {
     if !cfg!(target_os = "linux") {
-        return None;
+        return LinuxDistro::Other;
     }
 
     let os_release = read_os_release().unwrap_or_default();
@@ -154,51 +170,134 @@ fn suggested_linux_java_install_commands() -> Option<Vec<String>> {
     let id = distro_id.to_ascii_lowercase();
     let like = distro_like.to_ascii_lowercase();
 
-    let is_fedora = id == "fedora" || like.contains("fedora") || like.contains("rhel");
-    let is_debian = id == "debian" || like.contains("debian") || like.contains("ubuntu");
-    let is_arch = id == "arch" || like.contains("arch");
-
-    let commands = if is_fedora {
-        vec![
-            "sudo dnf install -y java-21-openjdk".to_string(),
-            "java -version".to_string(),
-        ]
-    } else if is_debian {
-        vec![
-            "sudo apt update".to_string(),
-            "sudo apt install -y openjdk-21-jre".to_string(),
-            "java -version".to_string(),
-        ]
-    } else if is_arch {
-        vec![
-            "sudo pacman -Syu --noconfirm jre21-openjdk".to_string(),
-            "java -version".to_string(),
-        ]
+    if id == "fedora" || like.contains("fedora") || like.contains("rhel") {
+        LinuxDistro::Fedora
+    } else if id == "debian" || like.contains("debian") || like.contains("ubuntu") {
+        LinuxDistro::Debian
+    } else if id == "arch" || like.contains("arch") {
+        LinuxDistro::Arch
     } else {
-        vec![
+        LinuxDistro::Other
+    }
+}
+
+fn normalize_java_requirement(required_major: Option<u32>) -> Option<u32> {
+    match required_major {
+        Some(major) if major <= 8 => Some(8),
+        Some(major) if major <= 17 => Some(17),
+        Some(_) => Some(21),
+        None => None,
+    }
+}
+
+fn java_download_label(major: u32) -> String {
+    format!("Java {major}")
+}
+
+fn temurin_release_url(major: u32) -> String {
+    format!("https://adoptium.net/temurin/releases/?version={major}")
+}
+
+fn temurin_winget_id(major: u32) -> Option<&'static str> {
+    match major {
+        8 => Some("EclipseAdoptium.Temurin.8.JRE"),
+        17 => Some("EclipseAdoptium.Temurin.17.JRE"),
+        21 => Some("EclipseAdoptium.Temurin.21.JRE"),
+        _ => None,
+    }
+}
+
+fn linux_java_package_name(distro: LinuxDistro, major: u32) -> Option<&'static str> {
+    match (distro, major) {
+        (LinuxDistro::Fedora, 8) => Some("java-1.8.0-openjdk"),
+        (LinuxDistro::Fedora, 17) => Some("java-17-openjdk"),
+        (LinuxDistro::Fedora, 21) => Some("java-21-openjdk"),
+        (LinuxDistro::Debian, 8) => Some("openjdk-8-jre"),
+        (LinuxDistro::Debian, 17) => Some("openjdk-17-jre"),
+        (LinuxDistro::Debian, 21) => Some("openjdk-21-jre"),
+        (LinuxDistro::Arch, 8) => Some("jre8-openjdk"),
+        (LinuxDistro::Arch, 17) => Some("jre17-openjdk"),
+        (LinuxDistro::Arch, 21) => Some("jre21-openjdk"),
+        _ => None,
+    }
+}
+
+fn requested_java_major_hint(required_major: Option<u32>) -> String {
+    match required_major {
+        Some(major) => format!("Install Java {major} or newer for the selected version."),
+        None => {
+            "Select a Minecraft version first, then install the Java version it requires."
+                .to_string()
+        }
+    }
+}
+
+fn suggested_linux_java_install_commands(required_major: Option<u32>) -> Option<Vec<String>> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+
+    let distro = detect_linux_distro();
+    let Some(install_major) = normalize_java_requirement(required_major) else {
+        return Some(vec![requested_java_major_hint(required_major)]);
+    };
+    let Some(package_name) = linux_java_package_name(distro, install_major) else {
+        return Some(vec![
+            requested_java_major_hint(required_major),
             "java -version".to_string(),
-            "# Instala Java 21 con el gestor de paquetes de tu distro.".to_string(),
-        ]
+        ]);
+    };
+
+    let commands = match distro {
+        LinuxDistro::Fedora => vec![
+            format!("sudo dnf install -y {package_name}"),
+            "java -version".to_string(),
+        ],
+        LinuxDistro::Debian => vec![
+            "sudo apt update".to_string(),
+            format!("sudo apt install -y {package_name}"),
+            "java -version".to_string(),
+        ],
+        LinuxDistro::Arch => vec![
+            format!("sudo pacman -Syu --noconfirm {package_name}"),
+            "java -version".to_string(),
+        ],
+        LinuxDistro::Other => vec![
+            requested_java_major_hint(required_major),
+            "java -version".to_string(),
+        ],
     };
 
     Some(commands)
 }
 
-fn suggested_windows_java_links() -> Option<Vec<DependencyLink>> {
+fn suggested_windows_java_links(required_major: Option<u32>) -> Option<Vec<DependencyLink>> {
     if !cfg!(windows) {
         return None;
     }
 
-    Some(vec![
-        DependencyLink {
-            label: "Eclipse Temurin (OpenJDK) 21".to_string(),
-            url: "https://adoptium.net/temurin/releases/?version=21".to_string(),
-        },
-        DependencyLink {
-            label: "Microsoft Build of OpenJDK 21".to_string(),
-            url: "https://learn.microsoft.com/java/openjdk/download".to_string(),
-        },
-    ])
+    let mut links = Vec::new();
+
+    if let Some(major) = normalize_java_requirement(required_major) {
+        links.push(DependencyLink {
+            label: format!("Eclipse Temurin (OpenJDK) {major}"),
+            url: temurin_release_url(major),
+        });
+    } else {
+        for major in [8, 17, 21] {
+            links.push(DependencyLink {
+                label: format!("Eclipse Temurin (OpenJDK) {major}"),
+                url: temurin_release_url(major),
+            });
+        }
+    }
+
+    links.push(DependencyLink {
+        label: "Microsoft Build of OpenJDK".to_string(),
+        url: "https://learn.microsoft.com/java/openjdk/download".to_string(),
+    });
+
+    Some(links)
 }
 
 fn is_command_available(command: &str) -> bool {
@@ -210,50 +309,46 @@ fn is_command_available(command: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn linux_auto_install_plan() -> Option<(String, Vec<String>, String)> {
+fn linux_auto_install_plan(required_major: Option<u32>) -> Option<(String, Vec<String>, String)> {
     if !cfg!(target_os = "linux") {
         return None;
     }
 
-    let os_release = read_os_release().unwrap_or_default();
-    let distro_id = parse_os_release_value(&os_release, "ID").unwrap_or_default();
-    let distro_like = parse_os_release_value(&os_release, "ID_LIKE").unwrap_or_default();
-    let id = distro_id.to_ascii_lowercase();
-    let like = distro_like.to_ascii_lowercase();
+    let install_major = normalize_java_requirement(required_major)?;
+    let distro = detect_linux_distro();
+    let package_name = linux_java_package_name(distro, install_major)?;
+    let requirement_label = java_download_label(install_major);
 
-    let is_fedora = id == "fedora" || like.contains("fedora") || like.contains("rhel");
-    let is_debian = id == "debian" || like.contains("debian") || like.contains("ubuntu");
-    let is_arch = id == "arch" || like.contains("arch");
-
-    if is_fedora && is_command_available("dnf") {
+    if distro == LinuxDistro::Fedora && is_command_available("dnf") {
         return Some((
             "dnf".to_string(),
-            vec!["install".to_string(), "-y".to_string(), "java-21-openjdk".to_string()],
-            "Instalará java-21-openjdk usando dnf (pedirá permisos).".to_string(),
+            vec!["install".to_string(), "-y".to_string(), package_name.to_string()],
+            format!("Will install {requirement_label} with dnf (administrator privileges required)."),
         ));
     }
 
-    if is_debian && is_command_available("apt") {
-        // Use apt-get for non-interactive, but keep it simple.
+    if distro == LinuxDistro::Debian && is_command_available("apt") {
         return Some((
             "sh".to_string(),
             vec![
                 "-lc".to_string(),
-                "apt update && apt install -y openjdk-21-jre".to_string(),
+                format!("apt update && apt install -y {package_name}"),
             ],
-            "Instalará openjdk-21-jre usando apt (pedirá permisos).".to_string(),
+            format!("Will install {requirement_label} with apt (administrator privileges required)."),
         ));
     }
 
-    if is_arch && is_command_available("pacman") {
+    if distro == LinuxDistro::Arch && is_command_available("pacman") {
         return Some((
             "pacman".to_string(),
             vec![
                 "-Syu".to_string(),
                 "--noconfirm".to_string(),
-                "jre21-openjdk".to_string(),
+                package_name.to_string(),
             ],
-            "Instalará jre21-openjdk usando pacman (pedirá permisos).".to_string(),
+            format!(
+                "Will install {requirement_label} with pacman (administrator privileges required)."
+            ),
         ));
     }
 
@@ -265,37 +360,24 @@ fn suggested_linux_graphics_install_commands() -> Option<Vec<String>> {
         return None;
     }
 
-    let os_release = read_os_release().unwrap_or_default();
-    let distro_id = parse_os_release_value(&os_release, "ID").unwrap_or_default();
-    let distro_like = parse_os_release_value(&os_release, "ID_LIKE").unwrap_or_default();
-    let id = distro_id.to_ascii_lowercase();
-    let like = distro_like.to_ascii_lowercase();
-
-    let is_fedora = id == "fedora" || like.contains("fedora") || like.contains("rhel");
-    let is_debian = id == "debian" || like.contains("debian") || like.contains("ubuntu");
-    let is_arch = id == "arch" || like.contains("arch");
-
-    let commands = if is_fedora {
-        vec![
+    let commands = match detect_linux_distro() {
+        LinuxDistro::Fedora => vec![
             "sudo dnf install -y xrandr".to_string(),
             "xrandr -q".to_string(),
-        ]
-    } else if is_debian {
-        vec![
+        ],
+        LinuxDistro::Debian => vec![
             "sudo apt update".to_string(),
             "sudo apt install -y x11-xserver-utils".to_string(),
             "xrandr -q".to_string(),
-        ]
-    } else if is_arch {
-        vec![
+        ],
+        LinuxDistro::Arch => vec![
             "sudo pacman -Syu --noconfirm xorg-xrandr".to_string(),
             "xrandr -q".to_string(),
-        ]
-    } else {
-        vec![
+        ],
+        LinuxDistro::Other => vec![
             "xrandr -q".to_string(),
-            "# Instala xrandr con el gestor de paquetes de tu distro.".to_string(),
-        ]
+            "# Install xrandr with your distribution package manager.".to_string(),
+        ],
     };
 
     Some(commands)
@@ -306,48 +388,34 @@ fn linux_graphics_auto_install_plan() -> Option<(String, Vec<String>, String)> {
         return None;
     }
 
-    let os_release = read_os_release().unwrap_or_default();
-    let distro_id = parse_os_release_value(&os_release, "ID").unwrap_or_default();
-    let distro_like = parse_os_release_value(&os_release, "ID_LIKE").unwrap_or_default();
-    let id = distro_id.to_ascii_lowercase();
-    let like = distro_like.to_ascii_lowercase();
-
-    let is_fedora = id == "fedora" || like.contains("fedora") || like.contains("rhel");
-    let is_debian = id == "debian" || like.contains("debian") || like.contains("ubuntu");
-    let is_arch = id == "arch" || like.contains("arch");
-
-    if is_fedora && is_command_available("dnf") {
-        return Some((
+    match detect_linux_distro() {
+        LinuxDistro::Fedora if is_command_available("dnf") => Some((
             "dnf".to_string(),
             vec!["install".to_string(), "-y".to_string(), "xrandr".to_string()],
-            "Instalará xrandr para Minecraft antiguo (pedirá permisos).".to_string(),
-        ));
-    }
-
-    if is_debian && is_command_available("apt") {
-        return Some((
+            "Will install xrandr for legacy Minecraft on Linux (administrator privileges required)."
+                .to_string(),
+        )),
+        LinuxDistro::Debian if is_command_available("apt") => Some((
             "sh".to_string(),
             vec![
                 "-lc".to_string(),
                 "apt update && apt install -y x11-xserver-utils".to_string(),
             ],
-            "Instalará x11-xserver-utils para Minecraft antiguo (pedirá permisos).".to_string(),
-        ));
-    }
-
-    if is_arch && is_command_available("pacman") {
-        return Some((
+            "Will install x11-xserver-utils for legacy Minecraft on Linux (administrator privileges required)."
+                .to_string(),
+        )),
+        LinuxDistro::Arch if is_command_available("pacman") => Some((
             "pacman".to_string(),
             vec![
                 "-Syu".to_string(),
                 "--noconfirm".to_string(),
                 "xorg-xrandr".to_string(),
             ],
-            "Instalará xorg-xrandr para Minecraft antiguo (pedirá permisos).".to_string(),
-        ));
+            "Will install xorg-xrandr for legacy Minecraft on Linux (administrator privileges required)."
+                .to_string(),
+        )),
+        _ => None,
     }
-
-    None
 }
 
 /// winget may return failure even when the JRE is already installed and up to date
@@ -361,7 +429,7 @@ fn winget_java_install_output_means_already_current(combined: &str) -> bool {
         || s.contains("a newer version is already installed")
 }
 
-fn windows_auto_install_plan() -> Option<(String, Vec<String>, String)> {
+fn windows_auto_install_plan(required_major: Option<u32>) -> Option<(String, Vec<String>, String)> {
     if !cfg!(windows) {
         return None;
     }
@@ -370,23 +438,28 @@ fn windows_auto_install_plan() -> Option<(String, Vec<String>, String)> {
         return None;
     }
 
+    let install_major = normalize_java_requirement(required_major)?;
+    let package_id = temurin_winget_id(install_major)?;
+
     Some((
         "winget".to_string(),
         vec![
             "install".to_string(),
             "--id".to_string(),
-            "EclipseAdoptium.Temurin.21.JRE".to_string(),
+            package_id.to_string(),
             "-e".to_string(),
             "--accept-package-agreements".to_string(),
             "--accept-source-agreements".to_string(),
         ],
-        "Instalará Temurin 21 JRE usando winget (puede pedir UAC).".to_string(),
+        format!(
+            "Will install Eclipse Temurin JRE {install_major} with winget (UAC may prompt)."
+        ),
     ))
 }
 
 #[tauri::command]
-pub fn check_java_dependency() -> Result<JavaDependencyStatus, String> {
-    let recommended_major = 21u32;
+pub fn check_java_dependency(request: Option<JavaDependencyRequest>) -> Result<JavaDependencyStatus, String> {
+    let required_major = request.and_then(|request| request.required_major);
     let java_executable = if cfg!(windows) { "java.exe" } else { "java" };
     let output = std::process::Command::new(java_executable)
         .arg("-version")
@@ -412,14 +485,23 @@ pub fn check_java_dependency() -> Result<JavaDependencyStatus, String> {
         Err(_) => (false, None, None),
     };
 
-    let needs_recommended =
-        !installed || detected_major.map(|major| major < recommended_major).unwrap_or(true);
+    let meets_requirement = match (required_major, detected_major) {
+        (Some(required_major), Some(detected_major)) => {
+            crate::launcher::java::java_major_satisfies_requirement(
+                detected_major,
+                required_major,
+            )
+        }
+        (None, Some(_)) => true,
+        _ => false,
+    };
+    let needs_requested_java = !installed || required_major.is_some() && !meets_requirement;
 
-    let (can_auto_install, auto_install_hint) = if !needs_recommended {
+    let (can_auto_install, auto_install_hint) = if !needs_requested_java {
         (false, None)
-    } else if let Some((_, _, hint)) = linux_auto_install_plan() {
+    } else if let Some((_, _, hint)) = linux_auto_install_plan(required_major) {
         (true, Some(hint))
-    } else if let Some((_, _, hint)) = windows_auto_install_plan() {
+    } else if let Some((_, _, hint)) = windows_auto_install_plan(required_major) {
         (true, Some(hint))
     } else {
         (false, None)
@@ -427,21 +509,22 @@ pub fn check_java_dependency() -> Result<JavaDependencyStatus, String> {
 
     Ok(JavaDependencyStatus {
         installed,
+        meets_requirement,
         detected_major,
         detected_raw,
-        suggested_linux_commands: if needs_recommended {
-            suggested_linux_java_install_commands()
+        suggested_linux_commands: if needs_requested_java {
+            suggested_linux_java_install_commands(required_major)
         } else {
             None
         },
-        suggested_windows_links: if needs_recommended {
-            suggested_windows_java_links()
+        suggested_windows_links: if needs_requested_java {
+            suggested_windows_java_links(required_major)
         } else {
             None
         },
         can_auto_install,
         auto_install_hint,
-        recommended_major,
+        required_major,
     })
 }
 
@@ -509,10 +592,15 @@ pub fn check_graphics_dependency() -> Result<GraphicsDependencyStatus, String> {
 }
 
 #[tauri::command]
-pub async fn auto_install_java() -> Result<DependencyInstallResult, String> {
+pub async fn auto_install_java(request: Option<JavaDependencyRequest>) -> Result<DependencyInstallResult, String> {
+    let required_major = request.and_then(|request| request.required_major);
+
     if cfg!(target_os = "linux") {
-        let Some((program, args, _)) = linux_auto_install_plan() else {
-            return Err("No supported auto-install plan was found for this Linux distribution.".to_string());
+        let Some((program, args, _)) = linux_auto_install_plan(required_major) else {
+            return Err(
+                "No supported auto-install plan is available for the requested Java version."
+                    .to_string(),
+            );
         };
 
         let elevated_program = if is_command_available("pkexec") {
@@ -547,8 +635,11 @@ pub async fn auto_install_java() -> Result<DependencyInstallResult, String> {
     }
 
     if cfg!(windows) {
-        let Some((program, args, _)) = windows_auto_install_plan() else {
-            return Err("winget was not found or no auto-install plan is available.".to_string());
+        let Some((program, args, _)) = windows_auto_install_plan(required_major) else {
+            return Err(
+                "winget was not found or no auto-install plan is available for the requested Java version."
+                    .to_string(),
+            );
         };
 
         let result = tauri::async_runtime::spawn_blocking(move || {

@@ -1,5 +1,3 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&family=Press+Start+2P&display=swap");
-
 :root {
   color-scheme: dark;
   --bg: #0c0c0c;
@@ -22,9 +20,9 @@
   --r-sm: 4px;
   --transition: 0.12s ease;
   --header-h: 40px;
-  --sans: "Inter", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --sans: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
   --mono: "JetBrains Mono", "Courier New", Consolas, monospace;
-  --pixel: "Press Start 2P", "JetBrains Mono", monospace;
+  --pixel: "JetBrains Mono", "Courier New", Consolas, monospace;
   font-family: var(--sans);
   color: var(--white);
   background: var(--bg);
@@ -574,6 +572,19 @@ h1.stage-title-lockup .stage-title-wordmark {
   height: 100%;
 }
 
+.scene-fallback {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  color: var(--gray);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-align: center;
+  background: color-mix(in srgb, var(--bg-panel), transparent 12%);
+}
+
 .preview-status-bar {
   display: grid;
   flex-shrink: 0;
@@ -645,6 +656,44 @@ h1.stage-title-lockup .stage-title-wordmark {
   border-top: 1px solid var(--border);
 }
 
+.dependency-actions {
+  margin-top: 8px;
+}
+
+.dependency-actions-row {
+  margin-top: 8px;
+}
+
+.dependency-command-list {
+  min-height: unset;
+  height: auto;
+  margin: 8px 0 0;
+  padding: 10px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: #050505;
+  color: #d8d8d8;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+:root[data-theme="light"] .dependency-command-list {
+  background: #111111;
+  color: #e8e8e8;
+}
+
+.dependency-link-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.dependency-link-list a {
+  color: var(--white);
+}
+
 .text-input {
   width: 100%;
   min-height: 32px;
@@ -658,6 +707,10 @@ h1.stage-title-lockup .stage-title-wordmark {
   font-family: var(--mono);
   font-size: 11px;
   transition: border-color var(--transition);
+}
+
+.spaced-input {
+  margin-top: 10px;
 }
 
 .text-input::placeholder {
@@ -697,9 +750,7 @@ h1.stage-title-lockup .stage-title-wordmark {
 .btn:focus-visible,
 .header-chip:focus-visible,
 .text-input:focus-visible,
-.version-item:focus-visible,
-.log-copy-btn:focus-visible,
-.optifine-card a:focus-visible {
+.log-copy-btn:focus-visible {
   outline: 1px solid var(--red);
   outline-offset: 1px;
 }
@@ -734,6 +785,10 @@ h1.stage-title-lockup .stage-title-wordmark {
   text-overflow: ellipsis;
 }
 
+.offline-skin-field {
+  margin-top: 10px;
+}
+
 .status-msg {
   margin: 8px 0 0;
   padding: 5px 7px;
@@ -756,109 +811,16 @@ h1.stage-title-lockup .stage-title-wordmark {
   background: rgba(221, 102, 102, 0.1);
 }
 
-.optifine-section {
-  background:
-    radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--red), transparent 88%), transparent 38%),
-    var(--bg-panel);
-}
-
 .deps-banner {
   background:
     radial-gradient(circle at 0% 0%, color-mix(in srgb, var(--danger), transparent 90%), transparent 45%),
     var(--bg-panel);
 }
-
-.optifine-grid {
-  display: grid;
-  gap: 8px;
-}
-
-.optifine-card {
-  display: grid;
-  gap: 7px;
-  padding: 10px;
-  border: 1px solid var(--border-light);
-  border-radius: var(--r-sm);
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--bg-input), var(--red) 4%), var(--bg-input)),
-    var(--bg-input);
-  transition:
-    background var(--transition),
-    border-color var(--transition),
-    transform var(--transition);
-}
-
-.optifine-card:hover {
-  border-color: color-mix(in srgb, var(--border-light), var(--white) 22%);
-  transform: translateY(-1px);
-}
-
-.optifine-card.installed,
-.optifine-card.selected {
-  border-color: var(--red-border);
-  background: linear-gradient(135deg, var(--red-soft), var(--bg-input));
-}
-
-.optifine-card-top,
-.optifine-meta,
 .install-progress-copy {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-}
-
-.optifine-version {
-  color: var(--white);
-  font-family: var(--pixel);
-  font-size: 13px;
-  line-height: 1.3;
-}
-
-.optifine-pill {
-  padding: 2px 6px;
-  border: 1px solid var(--border-light);
-  border-radius: 999px;
-  color: var(--gray);
-  font-family: var(--mono);
-  font-size: 8px;
-  letter-spacing: 0.7px;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.optifine-card strong {
-  color: var(--red);
-  font-family: var(--mono);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.3px;
-}
-
-.optifine-card p {
-  margin: 0;
-  color: var(--gray-dim);
-  font-size: 11px;
-  line-height: 1.4;
-}
-
-.optifine-meta {
-  color: var(--gray);
-  font-family: var(--mono);
-  font-size: 9px;
-}
-
-.optifine-meta a {
-  color: var(--gray);
-  text-decoration: none;
-}
-
-.optifine-meta a:hover {
-  color: var(--red);
-}
-
-.optifine-action {
-  min-height: 30px;
 }
 
 .install-progress {
@@ -1064,38 +1026,6 @@ h1.stage-title-lockup .stage-title-wordmark {
 .icon-btn .app-icon {
   width: 16px;
   height: 16px;
-}
-
-.version-item {
-  display: grid;
-  gap: 2px;
-  width: 100%;
-  min-width: 0;
-  padding: 8px 9px;
-  border: 1px solid var(--border-light);
-  border-radius: var(--r-sm);
-  background: var(--bg-input);
-  color: var(--white);
-  text-align: left;
-  transition:
-    background var(--transition),
-    border-color var(--transition),
-    color var(--transition);
-}
-
-.version-item:hover {
-  border-color: color-mix(in srgb, var(--border-light), var(--white) 22%);
-  background: var(--bg-hover);
-}
-
-.version-item:disabled {
-  opacity: 0.45;
-  background: var(--bg-card);
-}
-
-.version-item.selected {
-  border-color: var(--red-border);
-  background: var(--red-soft);
 }
 
 .version-name {

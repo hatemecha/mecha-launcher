@@ -92,10 +92,15 @@ export function loadOfflineSkinDataUrl(): string | null {
   return readString(STORAGE_KEYS.offlineSkinDataUrl);
 }
 
-export function storeOfflineSkinDataUrl(dataUrl: string | null): void {
-  if (!dataUrl) {
-    localStorage.removeItem(STORAGE_KEYS.offlineSkinDataUrl);
-    return;
+export function storeOfflineSkinDataUrl(dataUrl: string | null): boolean {
+  try {
+    if (!dataUrl) {
+      localStorage.removeItem(STORAGE_KEYS.offlineSkinDataUrl);
+      return true;
+    }
+    localStorage.setItem(STORAGE_KEYS.offlineSkinDataUrl, dataUrl);
+    return true;
+  } catch {
+    return false;
   }
-  localStorage.setItem(STORAGE_KEYS.offlineSkinDataUrl, dataUrl);
 }
