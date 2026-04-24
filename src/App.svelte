@@ -143,8 +143,6 @@
       (!graphicsStatus.installed || !graphicsStatus.usable)
   );
 
-  $: showDependencyWarnings = needsJavaAttention || needsGraphicsAttention;
-
   $: t = (key: MessageKey) => translate(locale, key);
 
   function setLocale(next: Locale): void {
@@ -323,7 +321,10 @@
         errorMessage = combined || t("depsJavaInstallFailed");
         await appendLog("system", errorMessage);
       } else {
-        await appendLog("system", t("depsJavaInstalledOk"));
+        await appendLog(
+          "system",
+          result.alreadyPresent ? t("depsJavaWingetAlreadyCurrent") : t("depsJavaInstalledOk")
+        );
       }
     } catch (error) {
       errorMessage = getErrorMessage(error, t("depsJavaInstallFailed"));
@@ -660,6 +661,37 @@
   }
 
   $: selectedVersion = versions.find((version) => version.id === selectedVersionId) ?? null;
+
+  /** Installed catalog row for the selected version (OptiFine exposes a per-build Java recommendation). */
+  $: selectedInstalledCatalogItem =
+    catalogItems.find((item) => item.installed && item.installedVersionId === selectedVersionId) ??
+    null;
+
+  $: javaMeetsSelectedCatalogRecommendation =
+    !selectedInstalledCatalogItem?.recommendedJavaMajor ||
+    (javaStatus != null &&
+      javaStatus.detectedMajor != null &&
+      javaStatus.detectedMajor >= selectedInstalledCatalogItem.recommendedJavaMajor);
+
+  /** Selected install (e.g. OptiFine) can require a higher Java than the global launcher check. */
+  $: needsSelectedVersionJavaAttention = Boolean(
+    javaStatus &&
+      !needsJavaAttention &&
+      selectedInstalledCatalogItem?.recommendedJavaMajor &&
+      (javaStatus.detectedMajor == null ||
+        javaStatus.detectedMajor < selectedInstalledCatalogItem.recommendedJavaMajor)
+  );
+
+  $: showDependencyWarnings =
+    needsJavaAttention || needsGraphicsAttention || needsSelectedVersionJavaAttention;
+
+  $: systemDependenciesOk =
+    javaStatus !== null &&
+    graphicsStatus !== null &&
+    !needsJavaAttention &&
+    !needsGraphicsAttention &&
+    javaMeetsSelectedCatalogRecommendation;
+
   $: canPlay = Boolean(
     minecraftDir.trim() &&
       selectedVersionId &&
@@ -667,7 +699,8 @@
       !isLaunching &&
       !installingOptifineOptionId &&
       !installingVanillaVersionId &&
-      selectedVersionId !== installingOptifineVersionId
+      selectedVersionId !== installingOptifineVersionId &&
+      systemDependenciesOk
   );
   $: installPercent = progressPercent(installProgress);
 
@@ -1248,6 +1281,33 @@
                   <pre class="log-console" style="min-height: unset; height: auto; padding: 10px; margin: 8px 0 0;">{javaStatus.suggestedLinuxCommands.join("\n")}</pre>
                 {/if}
                 {#if javaStatus?.suggestedWindowsLinks?.length}
+                  <div>{t("depsJavaWindowsNote")}</div>
+                  <ul style="margin: 8px 0 0; padding-left: 18px;">
+                    {#each javaStatus.suggestedWindowsLinks as link}
+                      <li><a href={link.url} target="_blank" rel="noreferrer">{link.label}</a></li>
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
+            </div>
+          {/if}
+
+          {#if needsSelectedVersionJavaAttention && javaStatus && selectedInstalledCatalogItem?.recommendedJavaMajor}
+            <div class="help-text dependency-subcard">
+              <strong>{t("depsJavaTitle")}</strong>
+              <div class="status-msg error">
+                {fillTemplate(t("depsJavaNotRecommended"), {
+                  major: javaStatus.detectedMajor ?? "—",
+                  recommended: selectedInstalledCatalogItem.recommendedJavaMajor
+                })}
+              </div>
+              <div style="margin-top: 8px;">
+                <div><strong>{t("depsJavaHowTo")}</strong></div>
+                {#if javaStatus.suggestedLinuxCommands?.length}
+                  <div>{t("depsJavaLinuxNote")}</div>
+                  <pre class="log-console" style="min-height: unset; height: auto; padding: 10px; margin: 8px 0 0;">{javaStatus.suggestedLinuxCommands.join("\n")}</pre>
+                {/if}
+                {#if javaStatus.suggestedWindowsLinks?.length}
                   <div>{t("depsJavaWindowsNote")}</div>
                   <ul style="margin: 8px 0 0; padding-left: 18px;">
                     {#each javaStatus.suggestedWindowsLinks as link}

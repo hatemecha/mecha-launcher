@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
+  import defaultSteveSkinUrl from "../assets/default-steve.png?url";
 
   export let skinUrl: string | null = null;
   export let sceneAriaLabel = "";
@@ -22,18 +23,15 @@
 
   async function applySkin(next: string | null): Promise<void> {
     const trimmed = next?.trim() ?? "";
+    const effectiveUrl = trimmed || defaultSteveSkinUrl;
     if (!viewer) {
       return;
     }
-    if (!trimmed) {
-      currentSkinUrl = "";
+    if (effectiveUrl === currentSkinUrl) {
       return;
     }
-    if (trimmed === currentSkinUrl) {
-      return;
-    }
-    currentSkinUrl = trimmed;
-    await viewer.loadSkin(trimmed, { model: "default" });
+    currentSkinUrl = effectiveUrl;
+    await viewer.loadSkin(effectiveUrl, { model: "default" });
   }
 
   onMount(() => {

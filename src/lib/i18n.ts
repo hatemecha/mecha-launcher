@@ -21,6 +21,8 @@ const esMessages = {
   depsJavaAutoInstall: "Instalar Java automáticamente",
   depsJavaInstalling: "Instalando Java…",
   depsJavaInstalledOk: "Java instalado. Reinicia el launcher si sigue sin detectarse.",
+  depsJavaWingetAlreadyCurrent:
+    "Java (Temurin 21) ya estaba instalado; winget no encontró una versión más nueva. Si el launcher no detecta Java, reinicia el launcher o la sesión de Windows.",
   depsJavaInstallFailed: "La instalación automática falló.",
   depsGraphicsTitle: "Compatibilidad gráfica Linux",
   depsGraphicsOk: "xrandr detectado. Minecraft 1.8.9/LWJGL 2 puede leer modos de pantalla.",
@@ -145,6 +147,8 @@ const enMessages: Record<MessageKey, string> = {
   depsJavaAutoInstall: "Auto-install Java",
   depsJavaInstalling: "Installing Java…",
   depsJavaInstalledOk: "Java installed. Restart the launcher if it is still not detected.",
+  depsJavaWingetAlreadyCurrent:
+    "Java (Temurin 21) was already installed; winget reported no newer version. Restart the launcher or sign out of Windows if Java is still not detected.",
   depsJavaInstallFailed: "Automatic installation failed.",
   depsGraphicsTitle: "Linux graphics compatibility",
   depsGraphicsOk: "xrandr detected. Minecraft 1.8.9/LWJGL 2 can read display modes.",

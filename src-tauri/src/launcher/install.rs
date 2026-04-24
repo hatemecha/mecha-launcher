@@ -1504,6 +1504,9 @@ fn set_executable_if_needed(path: &Path, executable: bool) -> LauncherResult<()>
         fs::set_permissions(path, permissions)?;
     }
 
+    #[cfg(not(unix))]
+    let _ = path;
+
     Ok(())
 }
 

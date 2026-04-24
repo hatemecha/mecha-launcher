@@ -80,6 +80,8 @@ export interface GraphicsDependencyStatus {
 
 export interface DependencyInstallResult {
   ok: boolean;
+  /** winget: JRE package already installed and up to date (exit code may still be non-zero). */
+  alreadyPresent?: boolean;
   exitCode?: number | null;
   stdout: string;
   stderr: string;

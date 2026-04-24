@@ -77,6 +77,9 @@ pub struct DependencyLink {
 #[serde(rename_all = "camelCase")]
 pub struct DependencyInstallResult {
     pub ok: bool,
+    /// True when winget reported the Temurin JRE package was already current (often with a non-zero exit code).
+    #[serde(default)]
+    pub already_present: bool,
     pub exit_code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
@@ -347,6 +350,17 @@ fn linux_graphics_auto_install_plan() -> Option<(String, Vec<String>, String)> {
     None
 }
 
+/// winget may return failure even when the JRE is already installed and up to date
+/// (<https://github.com/microsoft/winget-cli/issues/4262>).
+fn winget_java_install_output_means_already_current(combined: &str) -> bool {
+    let s = combined.to_ascii_lowercase();
+    (s.contains("found an existing package") && s.contains("already installed"))
+        || s.contains("no available upgrade found")
+        || s.contains("no newer package versions are available")
+        || s.contains("no applicable upgrade found")
+        || s.contains("a newer version is already installed")
+}
+
 fn windows_auto_install_plan() -> Option<(String, Vec<String>, String)> {
     if !cfg!(windows) {
         return None;
@@ -525,6 +539,7 @@ pub async fn auto_install_java() -> Result<DependencyInstallResult, String> {
 
         return Ok(DependencyInstallResult {
             ok: result.status.success(),
+            already_present: false,
             exit_code: result.status.code(),
             stdout: String::from_utf8_lossy(&result.stdout).to_string(),
             stderr: String::from_utf8_lossy(&result.stderr).to_string(),
@@ -545,11 +560,27 @@ pub async fn auto_install_java() -> Result<DependencyInstallResult, String> {
         .await
         .map_err(|error| error.to_string())??;
 
+        let stdout = String::from_utf8_lossy(&result.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&result.stderr).to_string();
+        let combined = format!("{stdout}\n{stderr}");
+        let already_present =
+            !result.status.success() && winget_java_install_output_means_already_current(&combined);
+        let ok = result.status.success() || already_present;
+
         return Ok(DependencyInstallResult {
-            ok: result.status.success(),
+            ok,
+            already_present,
             exit_code: result.status.code(),
-            stdout: String::from_utf8_lossy(&result.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&result.stderr).to_string(),
+            stdout: if already_present {
+                String::new()
+            } else {
+                stdout
+            },
+            stderr: if already_present {
+                String::new()
+            } else {
+                stderr
+            },
         });
     }
 
@@ -586,6 +617,7 @@ pub async fn auto_install_graphics_dependency() -> Result<DependencyInstallResul
 
         return Ok(DependencyInstallResult {
             ok: result.status.success(),
+            already_present: false,
             exit_code: result.status.code(),
             stdout: String::from_utf8_lossy(&result.stdout).to_string(),
             stderr: String::from_utf8_lossy(&result.stderr).to_string(),
