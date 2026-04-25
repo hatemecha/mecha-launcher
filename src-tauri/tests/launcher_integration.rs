@@ -49,7 +49,7 @@ impl EventSink for RecordingSink {
 }
 
 #[test]
-fn list_versions_only_returns_complete_version_directories() {
+fn list_versions_returns_complete_and_inherited_version_directories() {
     let temp_dir = tempdir().expect("tempdir should be created");
     let minecraft_dir = create_minecraft_layout(temp_dir.path());
 
@@ -65,11 +65,20 @@ fn list_versions_only_returns_complete_version_directories() {
         r#"{"id":"missing-jar","mainClass":"net.minecraft.Main","assetIndex":{"id":"demo"}}"#,
         false,
     );
+    write_version(
+        &minecraft_dir,
+        "inherited-custom",
+        r#"{"id":"inherited-custom","inheritsFrom":"valid"}"#,
+        false,
+    );
 
     let versions = list_versions(&minecraft_dir).expect("versions should load");
 
-    assert_eq!(versions.len(), 1);
-    assert_eq!(versions[0].id, "valid");
+    assert_eq!(versions.len(), 2);
+    assert!(versions.iter().any(|version| version.id == "valid"));
+    assert!(versions
+        .iter()
+        .any(|version| version.id == "inherited-custom"));
 }
 
 #[test]
@@ -390,12 +399,12 @@ fn prepare_launch_reports_actionable_missing_inputs() {
             minecraft_dir: minecraft_dir.to_string_lossy().to_string(),
             version_id: "missing-runtime".to_string(),
             username: "Player".to_string(),
-            required_java_major: None,
+            required_java_major: Some(999),
         },
         "runtime".to_string(),
     )
     .expect_err("runtime should fail");
-    assert!(runtime_error.to_string().contains("requires Java 21"));
+    assert!(runtime_error.to_string().contains("requires Java 999"));
 
     let library_error = prepare_launch(
         &LaunchRequest {

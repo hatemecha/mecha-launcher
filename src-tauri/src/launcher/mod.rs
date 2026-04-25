@@ -183,9 +183,7 @@ fn manifest_needs_legacy_lwjgl_linux_graphics(manifest: &ResolvedManifest) -> bo
         library
             .name
             .as_deref()
-            .map(|name| {
-                name.starts_with("org.lwjgl.lwjgl:lwjgl:2.")
-            })
+            .map(|name| name.starts_with("org.lwjgl.lwjgl:lwjgl:2."))
             .unwrap_or(false)
     })
 }
@@ -361,9 +359,12 @@ pub fn prepare_launch(request: &LaunchRequest, launch_id: String) -> LauncherRes
         &classpath_entries,
     )?;
 
-    let required_java_major = request
-        .required_java_major
-        .or_else(|| manifest.java_version.as_ref().map(|version| version.major_version));
+    let required_java_major = request.required_java_major.or_else(|| {
+        manifest
+            .java_version
+            .as_ref()
+            .map(|version| version.major_version)
+    });
     let java_executable = resolve_java_executable(
         &minecraft_dir,
         manifest.java_version.as_ref(),

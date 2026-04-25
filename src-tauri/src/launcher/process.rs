@@ -130,9 +130,11 @@ fn read_output<R: std::io::Read>(
 
     loop {
         buf.clear();
-        let bytes_read = buffered_reader.read_until(b'\n', &mut buf).map_err(|error| {
-            LauncherError::new(format!("Failed to read Minecraft process output: {error}"))
-        })?;
+        let bytes_read = buffered_reader
+            .read_until(b'\n', &mut buf)
+            .map_err(|error| {
+                LauncherError::new(format!("Failed to read Minecraft process output: {error}"))
+            })?;
         if bytes_read == 0 {
             break;
         }

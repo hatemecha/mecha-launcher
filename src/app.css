@@ -1,3 +1,9 @@
+@font-face {
+  font-family: "Mecha Minecraft";
+  font-display: swap;
+  src: url("../node_modules/skinview3d/assets/minecraft.woff2") format("woff2");
+}
+
 :root {
   color-scheme: dark;
   --bg: #0c0c0c;
@@ -21,8 +27,8 @@
   --transition: 0.12s ease;
   --header-h: 40px;
   --sans: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
-  --mono: "JetBrains Mono", "Courier New", Consolas, monospace;
-  --pixel: "JetBrains Mono", "Courier New", Consolas, monospace;
+  --mono: "Cascadia Mono", "Cascadia Code", "JetBrains Mono", Consolas, "Courier New", monospace;
+  --pixel: "Mecha Minecraft", "Cascadia Mono", "JetBrains Mono", Consolas, monospace;
   font-family: var(--sans);
   color: var(--white);
   background: var(--bg);

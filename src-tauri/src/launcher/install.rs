@@ -3,8 +3,8 @@ use std::{
     fs,
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
-    sync::{Mutex, OnceLock},
     sync::Arc,
+    sync::{Mutex, OnceLock},
     thread,
     time::{Duration, Instant},
 };
@@ -22,7 +22,8 @@ use crate::launcher::{
     LauncherError, LauncherResult,
 };
 
-const VERSION_MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
+const VERSION_MANIFEST_URL: &str =
+    "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 const JAVA_RUNTIME_MANIFEST_URL: &str =
     "https://launchermeta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json";
 const LIBRARIES_BASE_URL: &str = "https://libraries.minecraft.net/";
@@ -296,10 +297,9 @@ fn optifine_edition_rank(edition: &str) -> (String, u32, bool, u32, String) {
 }
 
 fn parse_optifine_downloads_html(html: &str) -> Vec<OptifineInstallOption> {
-    let pattern = Regex::new(
-        r#"OptiFine_(?P<mc>\d+\.\d+(?:\.\d+)?)_(?P<edition>HD_U_[A-Za-z0-9_]+)\.jar"#,
-    )
-    .expect("valid regex");
+    let pattern =
+        Regex::new(r#"OptiFine_(?P<mc>\d+\.\d+(?:\.\d+)?)_(?P<edition>HD_U_[A-Za-z0-9_]+)\.jar"#)
+            .expect("valid regex");
 
     let mut by_mc: HashMap<String, OptifineInstallOption> = HashMap::new();
 
@@ -331,7 +331,9 @@ fn parse_optifine_downloads_html(html: &str) -> Vec<OptifineInstallOption> {
 
         let should_replace = by_mc
             .get(&mc)
-            .map(|current| optifine_edition_rank(&candidate.edition) > optifine_edition_rank(&current.edition))
+            .map(|current| {
+                optifine_edition_rank(&candidate.edition) > optifine_edition_rank(&current.edition)
+            })
             .unwrap_or(true);
 
         if should_replace {
@@ -458,8 +460,10 @@ pub async fn install_vanilla_version(
         None,
     );
     let base_manifest_text = fetch_text(&client, &version_entry.url).await?;
-    let base_manifest = serde_json::from_str::<GameVersionManifest>(&base_manifest_text)
-        .map_err(|error| LauncherError::new(format!("Invalid Minecraft version manifest: {error}")))?;
+    let base_manifest =
+        serde_json::from_str::<GameVersionManifest>(&base_manifest_text).map_err(|error| {
+            LauncherError::new(format!("Invalid Minecraft version manifest: {error}"))
+        })?;
 
     // Reuse the same progress stream by mapping OptiFine-style events.
     let progress_clone = progress.clone();
@@ -486,8 +490,22 @@ pub async fn install_vanilla_version(
     )
     .await?;
 
-    install_libraries(&client, minecraft_dir, version_id_str, &base_manifest, &mapped_progress).await?;
-    install_assets(&client, minecraft_dir, version_id_str, &base_manifest, &mapped_progress).await?;
+    install_libraries(
+        &client,
+        minecraft_dir,
+        version_id_str,
+        &base_manifest,
+        &mapped_progress,
+    )
+    .await?;
+    install_assets(
+        &client,
+        minecraft_dir,
+        version_id_str,
+        &base_manifest,
+        &mapped_progress,
+    )
+    .await?;
 
     if let Some(java_version) = base_manifest.java_version.as_ref() {
         install_java_runtime(
@@ -521,7 +539,9 @@ pub async fn install_optifine_version(
         .await?
         .into_iter()
         .find(|option| option.id == option_id)
-        .ok_or_else(|| LauncherError::new(format!("Unknown OptiFine install option: {option_id}")))?;
+        .ok_or_else(|| {
+            LauncherError::new(format!("Unknown OptiFine install option: {option_id}"))
+        })?;
     let client = Client::builder()
         .user_agent("mecha-launcher/0.1")
         .build()
@@ -554,13 +574,18 @@ pub async fn install_optifine_version(
         &progress,
         &option.id,
         "minecraft",
-        &format!("Downloading Minecraft {} manifest.", option.minecraft_version),
+        &format!(
+            "Downloading Minecraft {} manifest.",
+            option.minecraft_version
+        ),
         None,
         None,
     );
     let base_manifest_text = fetch_text(&client, &version_entry.url).await?;
-    let base_manifest = serde_json::from_str::<GameVersionManifest>(&base_manifest_text)
-        .map_err(|error| LauncherError::new(format!("Invalid Minecraft version manifest: {error}")))?;
+    let base_manifest =
+        serde_json::from_str::<GameVersionManifest>(&base_manifest_text).map_err(|error| {
+            LauncherError::new(format!("Invalid Minecraft version manifest: {error}"))
+        })?;
     install_base_manifest_and_client(
         &client,
         minecraft_dir,
@@ -570,16 +595,32 @@ pub async fn install_optifine_version(
         &progress,
     )
     .await?;
-    install_libraries(&client, minecraft_dir, &option.id, &base_manifest, &progress).await?;
-    install_assets(&client, minecraft_dir, &option.id, &base_manifest, &progress).await?;
+    install_libraries(
+        &client,
+        minecraft_dir,
+        &option.id,
+        &base_manifest,
+        &progress,
+    )
+    .await?;
+    install_assets(
+        &client,
+        minecraft_dir,
+        &option.id,
+        &base_manifest,
+        &progress,
+    )
+    .await?;
 
     if let Some(java_version) = base_manifest.java_version.as_ref() {
         install_java_runtime(&client, minecraft_dir, &option.id, java_version, &progress).await?;
     }
 
-    let optifine_jar = download_optifine_installer(&client, minecraft_dir, &option, &progress).await?;
+    let optifine_jar =
+        download_optifine_installer(&client, minecraft_dir, &option, &progress).await?;
     ensure_launcher_profiles_json(minecraft_dir)?;
-    if let Err(error) = run_optifine_installer(minecraft_dir, &option, &optifine_jar, &progress).await
+    if let Err(error) =
+        run_optifine_installer(minecraft_dir, &option, &optifine_jar, &progress).await
     {
         let _ = cleanup_optifine_version_dir(minecraft_dir, &option);
         return Err(error);
@@ -628,7 +669,13 @@ fn emit(
 }
 
 fn ensure_minecraft_layout(minecraft_dir: &Path) -> LauncherResult<()> {
-    for directory in ["versions", "libraries", "assets/indexes", "assets/objects", "runtime"] {
+    for directory in [
+        "versions",
+        "libraries",
+        "assets/indexes",
+        "assets/objects",
+        "runtime",
+    ] {
         fs::create_dir_all(minecraft_dir.join(directory))?;
     }
 
@@ -891,7 +938,10 @@ async fn install_java_runtime(
     }
 
     for (index, (path, file)) in files.iter().enumerate() {
-        let Some(download) = file.downloads.as_ref().and_then(|downloads| downloads.raw.as_ref())
+        let Some(download) = file
+            .downloads
+            .as_ref()
+            .and_then(|downloads| downloads.raw.as_ref())
         else {
             continue;
         };
@@ -952,7 +1002,10 @@ async fn download_optifine_installer(
     let html = fetch_text(client, &adload_url).await?;
     let download_path = extract_optifine_download_path(&html, &option.file_name)?;
     let download_url = format!("{OPTIFINE_BASE_URL}{download_path}");
-    let installer_dir = minecraft_dir.join("versions").join("_mecha-cache").join("optifine");
+    let installer_dir = minecraft_dir
+        .join("versions")
+        .join("_mecha-cache")
+        .join("optifine");
     fs::create_dir_all(&installer_dir)?;
     let installer_path = installer_dir.join(&option.file_name);
 
@@ -1139,12 +1192,16 @@ fn installer_output_details(stdout_path: &Path, stderr_path: &Path) -> String {
 
     let lines = combined.lines().collect::<Vec<_>>();
     let was_line_truncated = lines.len() > OPTIFINE_INSTALLER_ERROR_TAIL_LINES;
-    let start = lines.len().saturating_sub(OPTIFINE_INSTALLER_ERROR_TAIL_LINES);
+    let start = lines
+        .len()
+        .saturating_sub(OPTIFINE_INSTALLER_ERROR_TAIL_LINES);
     let mut output = lines[start..].join("\n");
 
     if output.chars().count() > OPTIFINE_INSTALLER_ERROR_MAX_CHARS {
         let chars = output.chars().collect::<Vec<_>>();
-        let start = chars.len().saturating_sub(OPTIFINE_INSTALLER_ERROR_MAX_CHARS);
+        let start = chars
+            .len()
+            .saturating_sub(OPTIFINE_INSTALLER_ERROR_MAX_CHARS);
         output = chars[start..].iter().collect::<String>();
     }
 
@@ -1321,9 +1378,8 @@ where
     T: for<'de> Deserialize<'de>,
 {
     let text = fetch_text(client, url).await?;
-    serde_json::from_str(&text).map_err(|error| {
-        LauncherError::new(format!("Failed to parse JSON from {url}: {error}"))
-    })
+    serde_json::from_str(&text)
+        .map_err(|error| LauncherError::new(format!("Failed to parse JSON from {url}: {error}")))
 }
 
 async fn fetch_text(client: &Client, url: &str) -> LauncherResult<String> {
@@ -1637,10 +1693,7 @@ mod tests {
 
         assert_eq!(
             ids,
-            vec![
-                "1.20.4-OptiFine_HD_U_I7",
-                "1.16.5-OptiFine_HD_U_G8"
-            ]
+            vec!["1.20.4-OptiFine_HD_U_I7", "1.16.5-OptiFine_HD_U_G8"]
         );
     }
 
@@ -1675,7 +1728,10 @@ mod tests {
             Some("net/minecraft/launchwrapper/1.12/launchwrapper-1.12.jar".to_string())
         );
         assert_eq!(
-            maven_artifact_path("org.lwjgl.lwjgl:lwjgl-platform:2.9.4", Some("natives-linux")),
+            maven_artifact_path(
+                "org.lwjgl.lwjgl:lwjgl-platform:2.9.4",
+                Some("natives-linux")
+            ),
             Some(
                 "org/lwjgl/lwjgl/lwjgl-platform/2.9.4/lwjgl-platform-2.9.4-natives-linux.jar"
                     .to_string()

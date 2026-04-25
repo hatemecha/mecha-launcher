@@ -1,6 +1,6 @@
 fn main() {
-    let attributes = tauri_build::Attributes::new().app_manifest(
-        tauri_build::AppManifest::new().commands(&[
+    let attributes =
+        tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(&[
             "auto_install_graphics_dependency",
             "auto_install_java",
             "browse_minecraft_dir",
@@ -15,8 +15,7 @@ fn main() {
             "list_optifine_install_options",
             "list_vanilla_releases",
             "list_versions",
-        ]),
-    );
+        ]));
 
     tauri_build::try_build(attributes).expect("failed to run tauri build script");
 }

@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
 };
@@ -20,6 +21,8 @@ pub struct VersionArtifactPaths {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VersionMetadata {
+    #[serde(default)]
+    inherits_from: Option<String>,
     #[serde(default)]
     java_version: Option<JavaVersionMetadata>,
 }
@@ -151,6 +154,21 @@ pub fn resolve_version_artifact_paths(
     minecraft_dir: &Path,
     version_id: &str,
 ) -> LauncherResult<VersionArtifactPaths> {
+    let mut visited = HashSet::new();
+    resolve_version_artifact_paths_inner(minecraft_dir, version_id, &mut visited)
+}
+
+fn resolve_version_artifact_paths_inner(
+    minecraft_dir: &Path,
+    version_id: &str,
+    visited: &mut HashSet<String>,
+) -> LauncherResult<VersionArtifactPaths> {
+    if !visited.insert(version_id.to_string()) {
+        return Err(LauncherError::new(format!(
+            "Version inheritance cycle detected while resolving artifacts at {version_id}."
+        )));
+    }
+
     let version_dir = minecraft_dir.join("versions").join(version_id);
     let manifest_file = version_dir.join(format!("{version_id}.json"));
     let version_jar = version_dir.join(format!("{version_id}.jar"));
@@ -169,18 +187,49 @@ pub fn resolve_version_artifact_paths(
         )));
     }
 
-    if !version_jar.is_file() {
-        return Err(LauncherError::new(format!(
-            "Missing version jar file: {}",
-            version_jar.display()
-        )));
-    }
+    let resolved_version_jar = if version_jar.is_file() {
+        version_jar
+    } else {
+        let parent_version_id = read_inherited_version_id(&manifest_file)?;
+        match parent_version_id {
+            Some(parent_version_id) => {
+                resolve_version_artifact_paths_inner(minecraft_dir, &parent_version_id, visited)?
+                    .version_jar
+            }
+            None => {
+                return Err(LauncherError::new(format!(
+                    "Missing version jar file: {}",
+                    version_jar.display()
+                )))
+            }
+        }
+    };
 
     Ok(VersionArtifactPaths {
         version_dir,
         manifest_file,
-        version_jar,
+        version_jar: resolved_version_jar,
     })
+}
+
+fn read_inherited_version_id(manifest_file: &Path) -> LauncherResult<Option<String>> {
+    let manifest_contents = fs::read_to_string(manifest_file).map_err(|error| {
+        LauncherError::new(format!(
+            "Failed to read version manifest {}: {error}",
+            manifest_file.display()
+        ))
+    })?;
+    let metadata =
+        serde_json::from_str::<VersionMetadata>(&manifest_contents).map_err(|error| {
+            LauncherError::new(format!(
+                "Failed to parse version manifest {}: {error}",
+                manifest_file.display()
+            ))
+        })?;
+
+    Ok(metadata
+        .inherits_from
+        .filter(|value| !value.trim().is_empty()))
 }
 
 pub fn resolve_asset_index_path(
@@ -201,7 +250,7 @@ pub fn resolve_asset_index_path(
 mod tests {
     use std::{fs, path::Path};
 
-    use super::{default_minecraft_dir_for, list_versions};
+    use super::{default_minecraft_dir_for, list_versions, resolve_version_artifact_paths};
 
     #[test]
     fn windows_default_uses_appdata() {
@@ -264,5 +313,41 @@ mod tests {
 
         assert_eq!(versions.len(), 1);
         assert_eq!(versions[0].java_major_version, Some(21));
+    }
+
+    #[test]
+    fn list_versions_accepts_inherited_versions_without_child_jar() {
+        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+        let minecraft_dir = temp_dir.path().join(".minecraft");
+        let parent_dir = minecraft_dir.join("versions").join("1.16.5");
+        let child_dir = minecraft_dir.join("versions").join("redux");
+
+        fs::create_dir_all(&parent_dir).expect("parent version dir should exist");
+        fs::create_dir_all(&child_dir).expect("child version dir should exist");
+        fs::write(
+            parent_dir.join("1.16.5.json"),
+            r#"{"id":"1.16.5","mainClass":"net.minecraft.client.main.Main"}"#,
+        )
+        .expect("parent manifest should be written");
+        fs::write(parent_dir.join("1.16.5.jar"), b"parent").expect("parent jar should be written");
+        fs::write(
+            child_dir.join("redux.json"),
+            r#"{"id":"redux","inheritsFrom":"1.16.5"}"#,
+        )
+        .expect("child manifest should be written");
+
+        let versions = list_versions(&minecraft_dir).expect("versions should load");
+        let redux = versions
+            .iter()
+            .find(|version| version.id == "redux")
+            .expect("inherited child version should be listed");
+
+        assert!(redux.jar_path.ends_with("1.16.5.jar"));
+
+        let paths = resolve_version_artifact_paths(&minecraft_dir, "redux")
+            .expect("inherited child artifacts should resolve");
+        assert!(paths
+            .version_jar
+            .ends_with(Path::new("1.16.5").join("1.16.5.jar")));
     }
 }

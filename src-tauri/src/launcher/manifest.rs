@@ -413,7 +413,10 @@ where
     D: Deserializer<'de>,
 {
     let raw_value = Option::<U32LikeValue>::deserialize(deserializer)?;
-    raw_value.map(parse_u32_like_value).transpose().map_err(D::Error::custom)
+    raw_value
+        .map(parse_u32_like_value)
+        .transpose()
+        .map_err(D::Error::custom)
 }
 
 fn parse_u32_like_value(raw_value: U32LikeValue) -> Result<u32, String> {
@@ -754,14 +757,18 @@ mod tests {
         };
 
         let path = library
-            .classifier_path(std::path::Path::new("C:/minecraft/libraries"), "natives-windows")
+            .classifier_path(
+                std::path::Path::new("C:/minecraft/libraries"),
+                "natives-windows",
+            )
             .expect("classifier should resolve")
             .expect("classifier path should exist");
 
         assert_eq!(
             path,
-            std::path::Path::new("C:/minecraft/libraries")
-                .join("org/lwjgl/lwjgl/lwjgl-platform/2.9.4/lwjgl-platform-2.9.4-natives-windows.jar")
+            std::path::Path::new("C:/minecraft/libraries").join(
+                "org/lwjgl/lwjgl/lwjgl-platform/2.9.4/lwjgl-platform-2.9.4-natives-windows.jar"
+            )
         );
     }
 }

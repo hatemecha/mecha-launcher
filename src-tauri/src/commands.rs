@@ -14,12 +14,11 @@ use crate::{
         },
         process::spawn_launch,
         process::EventSink,
-        LaunchRequest, LaunchResponse, LauncherLogEvent, LauncherStatusEvent,
-        LauncherStatusState, MinecraftVersionSummary,
+        LaunchRequest, LaunchResponse, LauncherLogEvent, LauncherStatusEvent, LauncherStatusState,
+        MinecraftVersionSummary,
     },
     state::LaunchTracker,
 };
-
 
 struct TauriEventSink {
     app_handle: AppHandle,
@@ -225,10 +224,8 @@ fn linux_java_package_name(distro: LinuxDistro, major: u32) -> Option<&'static s
 fn requested_java_major_hint(required_major: Option<u32>) -> String {
     match required_major {
         Some(major) => format!("Install Java {major} or newer for the selected version."),
-        None => {
-            "Select a Minecraft version first, then install the Java version it requires."
-                .to_string()
-        }
+        None => "Select a Minecraft version first, then install the Java version it requires."
+            .to_string(),
     }
 }
 
@@ -322,8 +319,14 @@ fn linux_auto_install_plan(required_major: Option<u32>) -> Option<(String, Vec<S
     if distro == LinuxDistro::Fedora && is_command_available("dnf") {
         return Some((
             "dnf".to_string(),
-            vec!["install".to_string(), "-y".to_string(), package_name.to_string()],
-            format!("Will install {requirement_label} with dnf (administrator privileges required)."),
+            vec![
+                "install".to_string(),
+                "-y".to_string(),
+                package_name.to_string(),
+            ],
+            format!(
+                "Will install {requirement_label} with dnf (administrator privileges required)."
+            ),
         ));
     }
 
@@ -334,7 +337,9 @@ fn linux_auto_install_plan(required_major: Option<u32>) -> Option<(String, Vec<S
                 "-lc".to_string(),
                 format!("apt update && apt install -y {package_name}"),
             ],
-            format!("Will install {requirement_label} with apt (administrator privileges required)."),
+            format!(
+                "Will install {requirement_label} with apt (administrator privileges required)."
+            ),
         ));
     }
 
@@ -451,14 +456,14 @@ fn windows_auto_install_plan(required_major: Option<u32>) -> Option<(String, Vec
             "--accept-package-agreements".to_string(),
             "--accept-source-agreements".to_string(),
         ],
-        format!(
-            "Will install Eclipse Temurin JRE {install_major} with winget (UAC may prompt)."
-        ),
+        format!("Will install Eclipse Temurin JRE {install_major} with winget (UAC may prompt)."),
     ))
 }
 
 #[tauri::command]
-pub fn check_java_dependency(request: Option<JavaDependencyRequest>) -> Result<JavaDependencyStatus, String> {
+pub fn check_java_dependency(
+    request: Option<JavaDependencyRequest>,
+) -> Result<JavaDependencyStatus, String> {
     let required_major = request.and_then(|request| request.required_major);
     let java_executable = if cfg!(windows) { "java.exe" } else { "java" };
     let output = std::process::Command::new(java_executable)
@@ -487,10 +492,7 @@ pub fn check_java_dependency(request: Option<JavaDependencyRequest>) -> Result<J
 
     let meets_requirement = match (required_major, detected_major) {
         (Some(required_major), Some(detected_major)) => {
-            crate::launcher::java::java_major_satisfies_requirement(
-                detected_major,
-                required_major,
-            )
+            crate::launcher::java::java_major_satisfies_requirement(detected_major, required_major)
         }
         (None, Some(_)) => true,
         _ => false,
@@ -592,7 +594,9 @@ pub fn check_graphics_dependency() -> Result<GraphicsDependencyStatus, String> {
 }
 
 #[tauri::command]
-pub async fn auto_install_java(request: Option<JavaDependencyRequest>) -> Result<DependencyInstallResult, String> {
+pub async fn auto_install_java(
+    request: Option<JavaDependencyRequest>,
+) -> Result<DependencyInstallResult, String> {
     let required_major = request.and_then(|request| request.required_major);
 
     if cfg!(target_os = "linux") {
@@ -682,15 +686,16 @@ pub async fn auto_install_java(request: Option<JavaDependencyRequest>) -> Result
 pub async fn auto_install_graphics_dependency() -> Result<DependencyInstallResult, String> {
     if cfg!(target_os = "linux") {
         let Some((program, args, _)) = linux_graphics_auto_install_plan() else {
-            return Err("No supported graphics dependency auto-install plan was found.".to_string());
+            return Err(
+                "No supported graphics dependency auto-install plan was found.".to_string(),
+            );
         };
 
         let elevated_program = if is_command_available("pkexec") {
             "pkexec".to_string()
         } else {
             return Err(
-                "pkexec is not available. Install xrandr manually or install polkit."
-                    .to_string(),
+                "pkexec is not available. Install xrandr manually or install polkit.".to_string(),
             );
         };
 

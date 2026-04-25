@@ -34,7 +34,7 @@
     }
     try {
       currentSkinUrl = effectiveUrl;
-      await viewer.loadSkin(effectiveUrl, { model: "default" });
+      await viewer.loadSkin(effectiveUrl, { model: "auto-detect" });
       loadFailed = false;
     } catch (error) {
       loadFailed = true;

@@ -27,7 +27,7 @@ pub fn run() {
                     .permission("allow-list-optifine-install-options")
                     .permission("allow-list-vanilla-releases")
                     .permission("allow-delete-installed-version")
-                    .permission("allow-list-versions")
+                    .permission("allow-list-versions"),
             )?;
 
             Ok(())
