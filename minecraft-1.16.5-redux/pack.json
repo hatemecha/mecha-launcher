@@ -1,0 +1,8 @@
+{
+  "id": "1.16.5-redux",
+  "title": "Minecraft 1.16.5 Redux",
+  "minecraftVersion": "1.16.5",
+  "fabricLoaderVersion": "0.16.10",
+  "modsSubdir": ".",
+  "recommendedJavaMajor": 8
+}

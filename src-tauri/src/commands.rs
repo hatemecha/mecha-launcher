@@ -10,12 +10,13 @@ use crate::{
         self,
         install::{
             OptifineInstallOption, OptifineInstallResult, OptifineInstallStatusEvent,
+            ReduxInstallOption, ReduxInstallResult, ReduxInstallStatusEvent,
             VanillaInstallStatusEvent, VanillaRelease,
         },
         process::spawn_launch,
         process::EventSink,
-        LaunchRequest, LaunchResponse, LauncherLogEvent, LauncherStatusEvent, LauncherStatusState,
-        MinecraftVersionSummary,
+        LaunchRequest, LaunchResponse, LauncherLogEvent, LauncherStatusEvent,
+        LauncherStatusState, MinecraftVersionSummary, SystemMemoryProfile,
     },
     state::LaunchTracker,
 };
@@ -106,6 +107,13 @@ pub struct VanillaInstallRequest {
     pub version_id: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReduxInstallRequest {
+    pub minecraft_dir: String,
+    pub option_id: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VanillaInstallResult {
@@ -119,9 +127,30 @@ pub struct DeleteInstalledVersionRequest {
     pub version_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteVersionMetadata {
+    #[serde(default)]
+    mecha: Option<DeleteVersionMechaMetadata>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteVersionMechaMetadata {
+    #[serde(default)]
+    game_directory: Option<String>,
+    #[serde(default)]
+    source_kind: Option<String>,
+}
+
 #[tauri::command]
 pub fn detect_default_minecraft_dir() -> Option<String> {
     launcher::detect_default_minecraft_dir().map(|path| launcher::path_to_string(&path))
+}
+
+#[tauri::command]
+pub fn get_system_memory_profile() -> SystemMemoryProfile {
+    launcher::resolve_system_memory_profile()
 }
 
 fn read_os_release() -> Option<String> {
@@ -208,7 +237,7 @@ fn temurin_winget_id(major: u32) -> Option<&'static str> {
 
 fn linux_java_package_name(distro: LinuxDistro, major: u32) -> Option<&'static str> {
     match (distro, major) {
-        (LinuxDistro::Fedora, 8) => Some("java-1.8.0-openjdk"),
+        (LinuxDistro::Fedora, 8) => None,
         (LinuxDistro::Fedora, 17) => Some("java-17-openjdk"),
         (LinuxDistro::Fedora, 21) => Some("java-21-openjdk"),
         (LinuxDistro::Debian, 8) => Some("openjdk-8-jre"),
@@ -239,10 +268,14 @@ fn suggested_linux_java_install_commands(required_major: Option<u32>) -> Option<
         return Some(vec![requested_java_major_hint(required_major)]);
     };
     let Some(package_name) = linux_java_package_name(distro, install_major) else {
-        return Some(vec![
-            requested_java_major_hint(required_major),
-            "java -version".to_string(),
-        ]);
+        let mut commands = vec![requested_java_major_hint(required_major)];
+        if distro == LinuxDistro::Fedora && install_major == 8 {
+            commands.push(
+                "En Fedora recientes Java 8 ya no suele estar disponible como paquete dnf estándar; instala un JRE/JDK 8 manualmente (por ejemplo Eclipse Temurin 8).".to_string(),
+            );
+        }
+        commands.push("java -version".to_string());
+        return Some(commands);
     };
 
     let commands = match distro {
@@ -767,6 +800,11 @@ pub async fn list_vanilla_releases() -> Result<Vec<VanillaRelease>, String> {
 }
 
 #[tauri::command]
+pub async fn list_redux_install_options() -> Result<Vec<ReduxInstallOption>, String> {
+    launcher::install::list_redux_install_options().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn install_optifine_version(
     app: AppHandle,
     request: OptifineInstallRequest,
@@ -808,10 +846,32 @@ pub async fn install_vanilla_version(
 }
 
 #[tauri::command]
+pub async fn install_redux_version(
+    app: AppHandle,
+    request: ReduxInstallRequest,
+) -> Result<ReduxInstallResult, String> {
+    let app_handle = app.clone();
+    let progress = Arc::new(move |event: ReduxInstallStatusEvent| {
+        let _ = app_handle.emit("redux-install:status", event);
+    });
+
+    let result = launcher::install::install_redux_version(
+        Path::new(&request.minecraft_dir),
+        &request.option_id,
+        progress,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+
+    Ok(result)
+}
+
+#[tauri::command]
 pub fn delete_installed_version(request: DeleteInstalledVersionRequest) -> Result<(), String> {
     let minecraft_dir = Path::new(request.minecraft_dir.trim());
     let versions_dir = minecraft_dir.join("versions");
     let target_dir = versions_dir.join(request.version_id.trim());
+    let manifest_path = target_dir.join(format!("{}.json", request.version_id.trim()));
 
     let versions_dir = versions_dir
         .canonicalize()
@@ -837,7 +897,33 @@ pub fn delete_installed_version(request: DeleteInstalledVersionRequest) -> Resul
         return Err("Target version path is not a directory.".to_string());
     }
 
-    std::fs::remove_dir_all(&target_dir).map_err(|error| error.to_string())
+    let redux_game_directory = std::fs::read_to_string(&manifest_path)
+        .ok()
+        .and_then(|contents| serde_json::from_str::<DeleteVersionMetadata>(&contents).ok())
+        .and_then(|metadata| metadata.mecha)
+        .and_then(|mecha| {
+            if mecha.source_kind.as_deref() == Some("redux") {
+                mecha.game_directory
+            } else {
+                None
+            }
+        })
+        .map(std::path::PathBuf::from);
+
+    std::fs::remove_dir_all(&target_dir).map_err(|error| error.to_string())?;
+
+    if let Some(redux_game_directory) = redux_game_directory {
+        let instances_root = minecraft_dir.join("mecha-instances");
+        if let (Ok(instances_root), Ok(redux_game_directory)) =
+            (instances_root.canonicalize(), redux_game_directory.canonicalize())
+        {
+            if redux_game_directory.starts_with(&instances_root) && redux_game_directory.exists() {
+                std::fs::remove_dir_all(redux_game_directory).map_err(|error| error.to_string())?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -850,9 +936,9 @@ pub fn ensure_versions_dir(minecraft_dir: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn launch_version(
+pub async fn launch_version(
     app: AppHandle,
-    tracker: State<LaunchTracker>,
+    tracker: State<'_, LaunchTracker>,
     request: LaunchRequest,
 ) -> Result<LaunchResponse, String> {
     let launch_id = Uuid::new_v4().to_string();
@@ -868,6 +954,25 @@ pub fn launch_version(
         LauncherStatusState::Launching,
         Some(format!("Preparing launch plan for {}.", request.version_id)),
     ));
+
+    sink.emit_log(LauncherLogEvent::new(
+        launch_id.clone(),
+        crate::launcher::LauncherLogSource::System,
+        format!("Checking required files for {}.", request.version_id),
+    ));
+
+    if let Err(error) =
+        launcher::install::ensure_launch_requirements(Path::new(&request.minecraft_dir), &request.version_id)
+            .await
+    {
+        tracker.clear_if_matches(&launch_id);
+        sink.emit_status(LauncherStatusEvent::new(
+            launch_id.clone(),
+            LauncherStatusState::Error,
+            Some(error.to_string()),
+        ));
+        return Err(error.to_string());
+    }
 
     let plan = match launcher::prepare_launch(&request, launch_id.clone()) {
         Ok(plan) => plan,

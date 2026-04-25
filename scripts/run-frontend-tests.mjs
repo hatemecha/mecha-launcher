@@ -75,6 +75,7 @@ const {
 const {
   formatLauncherStatusMessage,
   formatOptifineInstallMessage,
+  formatReduxInstallMessage,
   formatVanillaInstallMessage
 } = loadTsModule("./src/lib/launcher-messages.ts");
 
@@ -106,19 +107,54 @@ runTest("buildCatalogItems keeps unknown local installs as local entries", () =>
       folderName: "1.20.4-custom-pack",
       jarPath: "versions/1.20.4-custom-pack/1.20.4-custom-pack.jar",
       manifestPath: "versions/1.20.4-custom-pack/1.20.4-custom-pack.json",
-      javaMajorVersion: 17
+      javaMajorVersion: 17,
+      sourceKind: "local"
     }
   ];
   const releases = [{ id: "1.20.4" }];
   const optifineOptions = [];
+  const reduxOptions = [];
 
-  const items = buildCatalogItems(installedVersions, releases, optifineOptions);
+  const items = buildCatalogItems(installedVersions, releases, optifineOptions, reduxOptions);
   const localItem = items.find((item) => item.id === "1.20.4-custom-pack");
 
   assert.ok(localItem);
   assert.equal(localItem.kind, "local");
   assert.equal(localItem.installed, true);
   assert.equal(localItem.requiredJavaMajor, 17);
+});
+
+runTest("buildCatalogItems includes redux entries and marks installed redux versions", () => {
+  const installedVersions = [
+    {
+      id: "1.16.5-redux",
+      folderName: "1.16.5-redux",
+      jarPath: "versions/1.16.5-redux/1.16.5-redux.jar",
+      manifestPath: "versions/1.16.5-redux/1.16.5-redux.json",
+      javaMajorVersion: 8,
+      sourceKind: "redux"
+    }
+  ];
+  const releases = [];
+  const optifineOptions = [];
+  const reduxOptions = [
+    {
+      id: "1.16.5-redux",
+      versionId: "1.16.5-redux",
+      title: "Minecraft 1.16.5 Redux",
+      summary: "Fabric + performance mods",
+      minecraftVersion: "1.16.5",
+      fabricLoaderVersion: "0.16.10",
+      recommendedJavaMajor: 8
+    }
+  ];
+
+  const items = buildCatalogItems(installedVersions, releases, optifineOptions, reduxOptions);
+  const reduxItem = items.find((item) => item.kind === "redux");
+
+  assert.ok(reduxItem);
+  assert.equal(reduxItem.installed, true);
+  assert.equal(reduxItem.installedVersionId, "1.16.5-redux");
 });
 
 runTest("filterCatalogItems ranks popular items by score before tie-breakers", () => {
@@ -151,6 +187,32 @@ runTest("filterCatalogItems ranks popular items by score before tie-breakers", (
     filtered.map((item) => item.key),
     ["optifine:1.20.4-hd-u-i7", "vanilla:1.20.4"]
   );
+});
+
+runTest("filterCatalogItems supports redux filter", () => {
+  const items = [
+    {
+      key: "redux:1.16.5-redux",
+      id: "1.16.5-redux",
+      kind: "redux",
+      title: "Minecraft 1.16.5 Redux",
+      subtitle: "Fabric · Redux",
+      installed: false
+    },
+    {
+      key: "vanilla:1.16.5",
+      id: "1.16.5",
+      kind: "vanilla",
+      title: "Minecraft 1.16.5",
+      subtitle: "Vanilla",
+      installed: true,
+      installedVersionId: "1.16.5"
+    }
+  ];
+
+  const filtered = filterCatalogItems(items, "redux", new Set(), {});
+
+  assert.deepEqual(filtered.map((item) => item.key), ["redux:1.16.5-redux"]);
 });
 
 runTest("findCatalogItemForInstalledVersion returns the matching installed catalog item", () => {
@@ -221,6 +283,32 @@ runTest("formatOptifineInstallMessage maps known stages and preserves progress",
       total: 1
     }),
     "1.20.4-HD_U_I7 quedó listo para jugar."
+  );
+});
+
+runTest("formatReduxInstallMessage maps redux-specific stages", () => {
+  assert.equal(
+    formatReduxInstallMessage("en", {
+      optionId: "1.16.5-redux",
+      versionId: "1.16.5-redux",
+      stage: "fabric",
+      message: "backend message",
+      current: null,
+      total: null
+    }),
+    "Installing Fabric."
+  );
+
+  assert.equal(
+    formatReduxInstallMessage("es", {
+      optionId: "1.16.5-redux",
+      versionId: "1.16.5-redux",
+      stage: "mods",
+      message: "backend message",
+      current: 3,
+      total: 9
+    }),
+    "Copiando mods del pack 3/9"
   );
 });
 

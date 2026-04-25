@@ -1,7 +1,11 @@
 <script lang="ts">
   import type { CatalogFilter, CatalogItem } from "../catalog";
   import type { MessageKey } from "../i18n";
-  import type { OptifineInstallStatusEvent, VanillaInstallStatusEvent } from "../types";
+  import type {
+    OptifineInstallStatusEvent,
+    ReduxInstallStatusEvent,
+    VanillaInstallStatusEvent
+  } from "../types";
 
   export let versionFilter: CatalogFilter = "installed";
   export let filteredCatalogItems: CatalogItem[] = [];
@@ -9,9 +13,10 @@
   export let isLaunching = false;
   export let installingOptifineOptionId: string | null = null;
   export let installingVanillaVersionId: string | null = null;
-  export let canPlay = false;
+  export let installingReduxVersionId: string | null = null;
   export let installProgress: OptifineInstallStatusEvent | null = null;
   export let vanillaInstallProgress: VanillaInstallStatusEvent | null = null;
+  export let reduxInstallProgress: ReduxInstallStatusEvent | null = null;
   export let installPercent: number | null = null;
   export let t: (key: MessageKey) => string;
   export let isFavorite: (item: CatalogItem) => boolean;
@@ -20,7 +25,24 @@
   export let onToggleFavorite: (item: CatalogItem) => void;
   export let onDownload: (item: CatalogItem) => void | Promise<void>;
   export let onDelete: (item: CatalogItem) => void | Promise<void>;
-  export let onPlay: () => void | Promise<void>;
+
+  let query = "";
+
+  function matchesQuery(item: CatalogItem, rawQuery: string): boolean {
+    const q = rawQuery.trim().toLowerCase();
+    if (!q) {
+      return true;
+    }
+
+    return (
+      item.title.toLowerCase().includes(q) ||
+      item.subtitle.toLowerCase().includes(q) ||
+      item.id.toLowerCase().includes(q) ||
+      item.key.toLowerCase().includes(q)
+    );
+  }
+
+  $: displayedCatalogItems = filteredCatalogItems.filter((item) => matchesQuery(item, query));
 </script>
 
 <section class="panel-section versions-section">
@@ -71,6 +93,14 @@
       {t("versionsFilterVanilla")}
     </button>
     <button
+      class:active={versionFilter === "redux"}
+      class="chip"
+      type="button"
+      on:click={() => onSetVersionFilter("redux")}
+    >
+      {t("versionsFilterRedux")}
+    </button>
+    <button
       class:active={versionFilter === "optifine"}
       class="chip"
       type="button"
@@ -80,16 +110,28 @@
     </button>
   </div>
 
+  <input
+    class="text-input"
+    type="search"
+    bind:value={query}
+    placeholder={t("versionsSearchPlaceholder")}
+    aria-label={t("versionsSearchAria")}
+    autocomplete="off"
+    spellcheck="false"
+  />
+
   <div class="version-list" role="list" aria-label={t("versionsListAria")}>
-    {#if filteredCatalogItems.length === 0}
+    {#if displayedCatalogItems.length === 0}
       <div class="empty-state">
         <p>{t("versionsEmptyTitle")}</p>
         <span>{t("versionsEmptyDetail")} <code>.json</code> + <code>.jar</code>.</span>
       </div>
     {:else}
-      {#each filteredCatalogItems as item (item.key)}
+      {#each displayedCatalogItems as item (item.key)}
         {@const selected = item.installedVersionId === selectedVersionId}
-        {@const busy = Boolean(isLaunching || installingOptifineOptionId || installingVanillaVersionId)}
+        {@const busy = Boolean(
+          isLaunching || installingOptifineOptionId || installingVanillaVersionId || installingReduxVersionId
+        )}
         <div class:selected class="catalog-item" role="listitem">
           <button
             class="catalog-main"
@@ -175,14 +217,18 @@
     </div>
   {/if}
 
-  <button
-    class:active={canPlay}
-    class="btn primary play-button"
-    type="button"
-    on:click={onPlay}
-    disabled={!canPlay}
-  >
-    <svg class="app-icon" aria-hidden="true"><use href="#icon-play" /></svg>
-    {isLaunching ? t("launching") : t("play")}
-  </button>
+  {#if reduxInstallProgress}
+    {@const percent = reduxInstallProgress.current && reduxInstallProgress.total
+      ? Math.min(100, Math.round((reduxInstallProgress.current / reduxInstallProgress.total) * 100))
+      : null}
+    <div class="install-progress" role="status">
+      <div class="install-progress-copy">
+        <span>{reduxInstallProgress.stage}</span>
+        <strong>{reduxInstallProgress.message}</strong>
+      </div>
+      <div class:indeterminate={percent === null} class="progress-track">
+        <span style={`width: ${percent ?? 100}%`}></span>
+      </div>
+    </div>
+  {/if}
 </section>

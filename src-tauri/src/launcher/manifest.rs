@@ -25,8 +25,13 @@ pub struct ResolvedManifest {
     pub id: String,
     pub main_class: String,
     pub asset_index_id: Option<String>,
+    pub asset_index_url: Option<String>,
+    pub asset_index_sha1: Option<String>,
+    pub asset_index_size: Option<u64>,
     pub java_version: Option<JavaVersion>,
     pub version_type: String,
+    pub game_directory: Option<PathBuf>,
+    pub source_kind: Option<String>,
     pub libraries: Vec<Library>,
     pub modern_arguments: Option<ArgumentsBlock>,
     pub legacy_minecraft_arguments: Option<String>,
@@ -43,6 +48,8 @@ pub struct LaunchArguments {
 pub struct Library {
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
     #[serde(default)]
     pub artifact: Option<LibraryDownload>,
     #[serde(default)]
@@ -71,6 +78,10 @@ pub struct LibraryDownloads {
 pub struct LibraryDownload {
     #[serde(default)]
     pub path: Option<String>,
+    #[serde(default)]
+    pub sha1: Option<String>,
+    #[serde(default)]
+    pub size: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -131,6 +142,17 @@ struct RawManifest {
     minecraft_arguments: Option<String>,
     #[serde(default, rename = "type")]
     version_type: Option<String>,
+    #[serde(default)]
+    mecha: Option<MechaMetadata>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct MechaMetadata {
+    #[serde(default)]
+    game_directory: Option<String>,
+    #[serde(default)]
+    source_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -138,6 +160,12 @@ struct RawManifest {
 struct AssetIndex {
     #[serde(default)]
     id: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    sha1: Option<String>,
+    #[serde(default)]
+    size: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -167,11 +195,33 @@ pub fn load_merged_manifest(
         main_class,
         asset_index_id: merged_manifest
             .asset_index
-            .and_then(|asset_index| asset_index.id),
+            .as_ref()
+            .and_then(|asset_index| asset_index.id.clone()),
+        asset_index_url: merged_manifest
+            .asset_index
+            .as_ref()
+            .and_then(|asset_index| asset_index.url.clone()),
+        asset_index_sha1: merged_manifest
+            .asset_index
+            .as_ref()
+            .and_then(|asset_index| asset_index.sha1.clone()),
+        asset_index_size: merged_manifest
+            .asset_index
+            .as_ref()
+            .and_then(|asset_index| asset_index.size),
         java_version: merged_manifest.java_version,
         version_type: merged_manifest
             .version_type
             .unwrap_or_else(|| "release".to_string()),
+        game_directory: merged_manifest
+            .mecha
+            .as_ref()
+            .and_then(|mecha| mecha.game_directory.as_ref())
+            .map(PathBuf::from),
+        source_kind: merged_manifest
+            .mecha
+            .as_ref()
+            .and_then(|mecha| mecha.source_kind.clone()),
         libraries: merged_manifest.libraries,
         modern_arguments: merged_manifest.arguments,
         legacy_minecraft_arguments: merged_manifest.minecraft_arguments,
@@ -349,6 +399,79 @@ impl Library {
         }
 
         None
+    }
+
+    pub fn artifact_download_source(
+        &self,
+    ) -> LauncherResult<Option<(String, String, Option<String>, Option<u64>)>> {
+        if self.is_legacy_native_placeholder_artifact() {
+            return Ok(None);
+        }
+
+        if let Some(artifact) = self.primary_artifact() {
+            let path = artifact.path.as_ref().ok_or_else(|| {
+                LauncherError::new("A library artifact entry is missing its path.")
+            })?;
+            let normalized_path = path.replace('\\', "/");
+            let base_url = self.url.as_deref().unwrap_or("https://libraries.minecraft.net/");
+            return Ok(Some((
+                normalized_path.clone(),
+                format!("{}{}", ensure_trailing_slash(base_url), normalized_path),
+                artifact.sha1.clone(),
+                artifact.size,
+            )));
+        }
+
+        if !self.natives.is_empty() {
+            return Ok(None);
+        }
+
+        if let Some(name) = &self.name {
+            let coordinates = MavenCoordinates::parse(name)?;
+            let path = coordinates.path(None);
+            let base_url = self.url.as_deref().unwrap_or("https://libraries.minecraft.net/");
+            return Ok(Some((
+                path.clone(),
+                format!("{}{}", ensure_trailing_slash(base_url), path),
+                None,
+                None,
+            )));
+        }
+
+        Ok(None)
+    }
+
+    pub fn classifier_download_source(
+        &self,
+        classifier: &str,
+    ) -> LauncherResult<Option<(String, String, Option<String>, Option<u64>)>> {
+        if let Some(download) = self.classifier_download(classifier) {
+            let path = download.path.as_ref().ok_or_else(|| {
+                LauncherError::new("A native classifier entry is missing its path.")
+            })?;
+            let normalized_path = path.replace('\\', "/");
+            let base_url = self.url.as_deref().unwrap_or("https://libraries.minecraft.net/");
+            return Ok(Some((
+                normalized_path.clone(),
+                format!("{}{}", ensure_trailing_slash(base_url), normalized_path),
+                download.sha1.clone(),
+                download.size,
+            )));
+        }
+
+        if let Some(name) = &self.name {
+            let coordinates = MavenCoordinates::parse(name)?;
+            let path = coordinates.path(Some(classifier));
+            let base_url = self.url.as_deref().unwrap_or("https://libraries.minecraft.net/");
+            return Ok(Some((
+                path.clone(),
+                format!("{}{}", ensure_trailing_slash(base_url), path),
+                None,
+                None,
+            )));
+        }
+
+        Ok(None)
     }
 
     fn is_legacy_native_placeholder_artifact(&self) -> bool {
@@ -546,6 +669,7 @@ impl RawManifest {
             arguments,
             minecraft_arguments: child.minecraft_arguments.or(self.minecraft_arguments),
             version_type: child.version_type.or(self.version_type),
+            mecha: child.mecha.or(self.mecha),
         }
     }
 }
@@ -597,6 +721,10 @@ impl MavenCoordinates {
     }
 
     fn artifact_path(&self, libraries_dir: &Path, classifier_override: Option<&str>) -> PathBuf {
+        libraries_dir.join(self.path(classifier_override))
+    }
+
+    fn path(&self, classifier_override: Option<&str>) -> String {
         let classifier = classifier_override
             .map(|value| value.to_string())
             .or_else(|| self.classifier.clone());
@@ -609,11 +737,21 @@ impl MavenCoordinates {
         file_name.push('.');
         file_name.push_str(&self.extension);
 
-        libraries_dir
-            .join(self.group.replace('.', "/"))
-            .join(&self.artifact)
-            .join(&self.version)
-            .join(file_name)
+        format!(
+            "{}/{}/{}/{}",
+            self.group.replace('.', "/"),
+            self.artifact,
+            self.version,
+            file_name
+        )
+    }
+}
+
+fn ensure_trailing_slash(value: &str) -> String {
+    if value.ends_with('/') {
+        value.to_string()
+    } else {
+        format!("{value}/")
     }
 }
 
@@ -694,8 +832,13 @@ mod tests {
             id: "test".to_string(),
             main_class: "net.minecraft.Main".to_string(),
             asset_index_id: Some("1.8".to_string()),
+            asset_index_url: None,
+            asset_index_sha1: None,
+            asset_index_size: None,
             java_version: None,
             version_type: "release".to_string(),
+            game_directory: None,
+            source_kind: None,
             libraries: Vec::new(),
             modern_arguments: None,
             legacy_minecraft_arguments: Some(
@@ -706,6 +849,7 @@ mod tests {
         let variables = LaunchVariables::new(
             &manifest,
             "Player",
+            std::path::Path::new("C:/minecraft"),
             std::path::Path::new("C:/minecraft"),
             std::path::Path::new("C:/minecraft/natives"),
             &[],
@@ -742,11 +886,14 @@ mod tests {
                     "org/lwjgl/lwjgl/lwjgl-platform/2.9.4/lwjgl-platform-2.9.4-natives-windows.jar"
                         .to_string(),
                 ),
+                sha1: None,
+                size: None,
             },
         );
 
         let library = Library {
             name: Some("org.lwjgl.lwjgl:lwjgl-platform:2.9.4".to_string()),
+            url: None,
             artifact: None,
             classifiers: Default::default(),
             classifies,

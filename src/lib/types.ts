@@ -5,6 +5,8 @@ export interface MinecraftVersionSummary {
   manifestPath: string;
   javaComponent?: string | null;
   javaMajorVersion?: number | null;
+  gameDirectory?: string | null;
+  sourceKind?: "local" | "vanilla" | "optifine" | "redux" | null;
 }
 
 export interface LaunchRequest {
@@ -12,10 +14,21 @@ export interface LaunchRequest {
   versionId: string;
   username: string;
   requiredJavaMajor?: number | null;
+  maxMemoryMb?: number | null;
 }
 
 export interface LaunchResponse {
   launchId: string;
+}
+
+export type LaunchMemoryMode = "auto" | "manual";
+
+export interface SystemMemoryProfile {
+  detected: boolean;
+  totalMemoryMb: number;
+  minAllocatableMb: number;
+  maxAllocatableMb: number;
+  recommendedAllocatableMb: number;
 }
 
 export type LaunchState = "launching" | "running" | "exited" | "error";
@@ -122,6 +135,36 @@ export interface VanillaInstallResult {
 }
 
 export interface VanillaInstallStatusEvent {
+  versionId: string;
+  stage: string;
+  message: string;
+  current?: number | null;
+  total?: number | null;
+}
+
+export interface ReduxInstallOption {
+  id: string;
+  versionId: string;
+  title: string;
+  summary: string;
+  minecraftVersion: string;
+  fabricLoaderVersion: string;
+  recommendedJavaMajor: number;
+}
+
+export interface ReduxInstallRequest {
+  minecraftDir: string;
+  optionId: string;
+}
+
+export interface ReduxInstallResult {
+  versionId: string;
+  minecraftVersion: string;
+  fabricLoaderVersion: string;
+}
+
+export interface ReduxInstallStatusEvent {
+  optionId: string;
   versionId: string;
   stage: string;
   message: string;

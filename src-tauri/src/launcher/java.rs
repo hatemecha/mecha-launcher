@@ -17,6 +17,14 @@ pub fn resolve_java_executable(
         if let Some(runtime_java) = find_runtime_java(minecraft_dir, &java_version.component) {
             return Ok(runtime_java);
         }
+
+        let runtime_root = minecraft_dir.join("runtime").join(&java_version.component);
+        return Err(LauncherError::new(format!(
+            "The selected version requires Java {} via runtime component {}, but no bundled runtime was found at {}.",
+            java_version.major_version,
+            java_version.component,
+            runtime_root.display()
+        )));
     }
 
     let system_candidate = if cfg!(windows) { "java.exe" } else { "java" };
@@ -87,8 +95,10 @@ fn detect_java_major(java_executable: &Path) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use regex::Regex;
+    use tempfile::tempdir;
 
-    use super::{detect_java_major, java_major_satisfies_requirement};
+    use super::{detect_java_major, java_major_satisfies_requirement, resolve_java_executable};
+    use crate::launcher::manifest::JavaVersion;
 
     #[test]
     fn parses_java_8_version_output() {
@@ -114,5 +124,23 @@ mod tests {
         assert!(java_major_satisfies_requirement(17, 16));
         assert!(java_major_satisfies_requirement(21, 17));
         assert!(!java_major_satisfies_requirement(8, 17));
+    }
+
+    #[test]
+    fn declared_runtime_must_exist_in_minecraft_runtime_dir() {
+        let temp_dir = tempdir().expect("temp dir should exist");
+        let error = resolve_java_executable(
+            temp_dir.path(),
+            Some(&JavaVersion {
+                component: "java-runtime-delta".to_string(),
+                major_version: 21,
+            }),
+            Some(21),
+        )
+        .expect_err("missing bundled runtime should fail");
+
+        let message = error.to_string();
+        assert!(message.contains("requires Java 21"));
+        assert!(message.contains("java-runtime-delta"));
     }
 }

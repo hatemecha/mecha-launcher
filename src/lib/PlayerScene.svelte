@@ -58,11 +58,13 @@
       const nextViewer = new skinview3d.SkinViewer({
         canvas: canvasEl,
         width: Math.max(container.clientWidth, 1),
-        height: Math.max(container.clientHeight, 1)
+        height: Math.max(container.clientHeight, 1),
+        zoom: 0.78
       });
 
       nextViewer.autoRotate = true;
       nextViewer.autoRotateSpeed = 0.7;
+      nextViewer.adjustCameraDistance();
 
       viewer = nextViewer;
       applySize();

@@ -19,31 +19,39 @@
     deleteInstalledVersion,
     detectDefaultMinecraftDir,
     ensureVersionsDir,
+    getSystemMemoryProfile,
     installOptifineVersion,
+    installReduxVersion,
     installVanillaVersion,
     launchVersion,
     listOptifineInstallOptions,
+    listReduxInstallOptions,
     listVanillaReleases,
     listVersions,
     onLauncherLog,
     onLauncherStatus,
     onOptifineInstallStatus,
+    onReduxInstallStatus,
     onVanillaInstallStatus
   } from "./lib/tauri";
   import {
     formatLauncherStatusMessage,
     formatOptifineInstallMessage,
+    formatReduxInstallMessage,
     formatVanillaInstallMessage
   } from "./lib/launcher-messages";
   import DependencyBanner from "./lib/components/DependencyBanner.svelte";
   import LanguagePanel from "./lib/components/LanguagePanel.svelte";
   import LaunchStage from "./lib/components/LaunchStage.svelte";
+  import MemorySettingsPanel from "./lib/components/MemorySettingsPanel.svelte";
   import MinecraftDirectoryPanel from "./lib/components/MinecraftDirectoryPanel.svelte";
   import OfflineProfilePanel from "./lib/components/OfflineProfilePanel.svelte";
   import VersionCatalogPanel from "./lib/components/VersionCatalogPanel.svelte";
   import {
     clearSelectedVersionId,
     incrementPopularity,
+    loadLaunchMemoryMb,
+    loadLaunchMemoryMode,
     loadStoredMinecraftDir,
     loadStoredVersionId,
     loadFavoriteKeys,
@@ -52,6 +60,8 @@
     storeSelectedVersionId,
     loadOfflineSkinDataUrl,
     loadOfflineUsername,
+    storeLaunchMemoryMb,
+    storeLaunchMemoryMode,
     storeOfflineSkinDataUrl,
     storeOfflineUsername,
     toggleFavoriteKey
@@ -66,11 +76,16 @@
     type MessageKey
   } from "./lib/i18n";
   import type {
+    LaunchMemoryMode,
     LauncherLogEvent,
+    LaunchState,
     LauncherStatusEvent,
     MinecraftVersionSummary,
     OptifineInstallOption,
     OptifineInstallStatusEvent,
+    ReduxInstallOption,
+    ReduxInstallStatusEvent,
+    SystemMemoryProfile,
     VanillaInstallStatusEvent,
     VanillaRelease
   } from "./lib/types";
@@ -80,6 +95,13 @@
   const MAX_LOG_LINES = 250;
   const MAX_OFFLINE_SKIN_BYTES = 1024 * 1024;
   const VALID_OFFLINE_SKIN_DIMENSIONS = new Set(["64x32", "64x64"]);
+  const FALLBACK_SYSTEM_MEMORY_PROFILE: SystemMemoryProfile = {
+    detected: false,
+    totalMemoryMb: 8192,
+    minAllocatableMb: 1024,
+    maxAllocatableMb: 6144,
+    recommendedAllocatableMb: 2048
+  };
 
   let locale: Locale = readStoredLocale();
 
@@ -95,6 +117,7 @@
   let detectedMinecraftDir = "";
   let versions: MinecraftVersionSummary[] = [];
   let optifineOptions: OptifineInstallOption[] = [];
+  let reduxOptions: ReduxInstallOption[] = [];
   let vanillaReleases: VanillaRelease[] = [];
   let selectedVersionId = "";
   let offlineUsername = loadOfflineUsername() ?? DEFAULT_OFFLINE_USERNAME;
@@ -134,15 +157,23 @@
   let installProgress: OptifineInstallStatusEvent | null = null;
   let installingVanillaVersionId: string | null = null;
   let vanillaInstallProgress: VanillaInstallStatusEvent | null = null;
+  let installingReduxVersionId: string | null = null;
+  let reduxInstallProgress: ReduxInstallStatusEvent | null = null;
   let lastLoggedInstallStage = "";
   let lastLoggedVanillaInstallStage = "";
+  let lastLoggedReduxInstallStage = "";
   let activeLaunchId: string | null = null;
+  let activeLaunchState: LaunchState | null = null;
   let logLines: LogLine[] = [];
   let logViewport: HTMLDivElement | null = null;
   let copiedLog = false;
   let themeMode: ThemeMode = "dark";
   let versionFilter: CatalogFilter = "installed";
   let lastDependencyRequirement: number | null | undefined = undefined;
+  let systemMemoryProfile: SystemMemoryProfile = FALLBACK_SYSTEM_MEMORY_PROFILE;
+  let launchMemoryMode: LaunchMemoryMode = loadLaunchMemoryMode();
+  let manualLaunchMemoryMb =
+    loadLaunchMemoryMb() ?? FALLBACK_SYSTEM_MEMORY_PROFILE.recommendedAllocatableMb;
 
   $: needsJavaAttention = Boolean(
     javaStatus && !selectedVersionProvidesRuntime && !javaStatus.installed
@@ -272,6 +303,28 @@
     const nextThemeMode = themeMode === "dark" ? "light" : "dark";
     applyThemeMode(nextThemeMode);
     localStorage.setItem(THEME_STORAGE_KEY, nextThemeMode);
+  }
+
+  function clampLaunchMemoryMb(memoryMb: number): number {
+    if (!Number.isFinite(memoryMb)) {
+      return systemMemoryProfile.recommendedAllocatableMb;
+    }
+
+    return Math.min(
+      systemMemoryProfile.maxAllocatableMb,
+      Math.max(systemMemoryProfile.minAllocatableMb, Math.round(memoryMb))
+    );
+  }
+
+  function setLaunchMemoryMode(nextMode: LaunchMemoryMode): void {
+    launchMemoryMode = nextMode;
+    storeLaunchMemoryMode(nextMode);
+  }
+
+  function setManualLaunchMemoryMb(nextMemoryMb: number): void {
+    const clamped = clampLaunchMemoryMb(nextMemoryMb);
+    manualLaunchMemoryMb = clamped;
+    storeLaunchMemoryMb(clamped);
   }
 
   async function hydrateMinecraftDir(): Promise<void> {
@@ -581,6 +634,55 @@
     }
   }
 
+  async function handleInstallRedux(option: ReduxInstallOption): Promise<void> {
+    if (installingReduxVersionId || isLaunching) {
+      return;
+    }
+
+    const targetDir = minecraftDir.trim() || detectedMinecraftDir.trim();
+    if (!targetDir) {
+      errorMessage = t("versionInstallNeedDir");
+      await appendLog("system", errorMessage);
+      return;
+    }
+
+    minecraftDir = targetDir;
+    storeMinecraftDir(targetDir);
+    installingReduxVersionId = option.versionId;
+    if (selectedVersionId === option.versionId) {
+      selectedVersionId = "";
+      clearSelectedVersionId();
+    }
+    reduxInstallProgress = {
+      optionId: option.id,
+      versionId: option.versionId,
+      stage: "queued",
+      message: t("versionDownloading")
+    };
+    lastLoggedReduxInstallStage = "";
+    errorMessage = "";
+    statusMessage = t("versionDownloading");
+
+    try {
+      const result = await installReduxVersion({
+        minecraftDir: targetDir,
+        optionId: option.id
+      });
+      await refreshVersions();
+      selectedVersionId = result.versionId;
+      storeSelectedVersionId(result.versionId);
+      await appendLog("system", fillTemplate(t("logVersionInstalled"), { id: result.versionId }));
+      reduxInstallProgress = null;
+      await refreshDependencies();
+    } catch (error) {
+      errorMessage = getErrorMessage(error, t("errInstallReduxFailed"));
+      statusMessage = errorMessage;
+      await appendLog("system", errorMessage);
+    } finally {
+      installingReduxVersionId = null;
+    }
+  }
+
   async function handlePlay(): Promise<void> {
     if (!canPlay) {
       if (installingOptifineOptionId) {
@@ -597,18 +699,20 @@
         minecraftDir: minecraftDir.trim(),
         versionId: selectedVersionId,
         username: offlineUsername.trim() || DEFAULT_OFFLINE_USERNAME,
-        requiredJavaMajor: selectedRequiredJavaMajor
+        requiredJavaMajor: selectedRequiredJavaMajor,
+        maxMemoryMb: launchMemoryMode === "manual" ? clampLaunchMemoryMb(manualLaunchMemoryMb) : null
       });
 
       activeLaunchId = response.launchId;
       isLaunching = true;
+      activeLaunchState = "launching";
       statusMessage = formatLauncherStatusMessage(locale, {
         launchId: response.launchId,
         state: "launching"
       }, selectedVersionId);
-      const optifineMatch = optifineOptions.find((option) => option.versionId === selectedVersionId);
-      const popKey = (optifineMatch ? `optifine:${optifineMatch.id}` : `vanilla:${selectedVersionId}`) as const;
-      incrementPopularity(popKey);
+      if (selectedInstalledCatalogItem) {
+        incrementPopularity(selectedInstalledCatalogItem.key);
+      }
       popularity = loadPopularity();
       await appendLog(
         "system",
@@ -633,6 +737,7 @@
     }
 
     activeLaunchId = event.launchId;
+    activeLaunchState = event.state === "error" || event.state === "exited" ? null : event.state;
 
     statusMessage = formatLauncherStatusMessage(locale, event, selectedVersionId);
 
@@ -699,6 +804,31 @@
     }
   }
 
+  async function handleReduxStatus(event: ReduxInstallStatusEvent): Promise<void> {
+    if (installingReduxVersionId && event.versionId !== installingReduxVersionId) {
+      return;
+    }
+
+    const localizedMessage = formatReduxInstallMessage(locale, event);
+    reduxInstallProgress = { ...event, message: localizedMessage };
+    statusMessage = localizedMessage;
+
+    const shouldLogInstallStatus =
+      event.stage !== lastLoggedReduxInstallStage ||
+      event.stage === "done" ||
+      (event.current !== null &&
+        event.current !== undefined &&
+        event.total !== null &&
+        event.total !== undefined &&
+        event.current === event.total) ||
+      (!event.current && !event.total);
+
+    if (shouldLogInstallStatus) {
+      lastLoggedReduxInstallStage = event.stage;
+      await appendLog("system", localizedMessage);
+    }
+  }
+
   function formatSourceLabel(source: LogLine["source"]): string {
     switch (source) {
       case "stderr":
@@ -718,7 +848,7 @@
 
   $: selectedVersion = versions.find((version) => version.id === selectedVersionId) ?? null;
   $: selectedVersionProvidesRuntime = Boolean(selectedVersion?.javaComponent);
-  $: catalogItems = buildCatalogItems(versions, vanillaReleases, optifineOptions);
+  $: catalogItems = buildCatalogItems(versions, vanillaReleases, optifineOptions, reduxOptions);
 
   $: selectedInstalledCatalogItem =
     findCatalogItemForInstalledVersion(catalogItems, selectedVersionId);
@@ -763,10 +893,25 @@
       !isLaunching &&
       !installingOptifineOptionId &&
       !installingVanillaVersionId &&
+      !installingReduxVersionId &&
       selectedVersionId !== installingOptifineVersionId &&
       systemDependenciesOk
   );
+  $: playButtonLabel =
+    activeLaunchState === "launching"
+      ? t("launching")
+      : activeLaunchState === "running"
+        ? t("playBusy")
+        : t("play");
+  $: playBlockedMessage =
+    activeLaunchState === "launching" || activeLaunchState === "running"
+      ? t("playBlockedActiveInstance")
+      : "";
   $: installPercent = progressPercent(installProgress);
+  $: if (manualLaunchMemoryMb !== clampLaunchMemoryMb(manualLaunchMemoryMb)) {
+    manualLaunchMemoryMb = clampLaunchMemoryMb(manualLaunchMemoryMb);
+    storeLaunchMemoryMb(manualLaunchMemoryMb);
+  }
 
   let favoriteKeys = loadFavoriteKeys();
   let popularity = loadPopularity();
@@ -797,13 +942,18 @@
   }
 
   async function handleDownload(item: CatalogItem): Promise<void> {
-    if (isLaunching || installingOptifineOptionId || installingVanillaVersionId) {
+    if (
+      isLaunching ||
+      installingOptifineOptionId ||
+      installingVanillaVersionId ||
+      installingReduxVersionId
+    ) {
       return;
     }
 
     const targetDir = minecraftDir.trim() || detectedMinecraftDir.trim();
     if (!targetDir) {
-      errorMessage = translate(locale, "optifineInstallNeedDir");
+      errorMessage = translate(locale, "versionInstallNeedDir");
       await appendLog("system", errorMessage);
       return;
     }
@@ -821,6 +971,19 @@
       }
       incrementPopularity(item.key);
       await handleInstallOptifine(option);
+      popularity = loadPopularity();
+      return;
+    }
+
+    if (item.kind === "redux") {
+      const option = reduxOptions.find((opt) => opt.id === item.id);
+      if (!option) {
+        errorMessage = t("errUnknownReduxOption");
+        await appendLog("system", errorMessage);
+        return;
+      }
+      incrementPopularity(item.key);
+      await handleInstallRedux(option);
       popularity = loadPopularity();
       return;
     }
@@ -860,13 +1023,18 @@
     if (!item.installed || !item.installedVersionId) {
       return;
     }
-    if (isLaunching || installingOptifineOptionId || installingVanillaVersionId) {
+    if (
+      isLaunching ||
+      installingOptifineOptionId ||
+      installingVanillaVersionId ||
+      installingReduxVersionId
+    ) {
       return;
     }
 
     const targetDir = minecraftDir.trim() || detectedMinecraftDir.trim();
     if (!targetDir) {
-      errorMessage = translate(locale, "optifineInstallNeedDir");
+      errorMessage = translate(locale, "versionInstallNeedDir");
       await appendLog("system", errorMessage);
       return;
     }
@@ -917,6 +1085,7 @@
     let unlistenLog = () => undefined;
     let unlistenOptifineInstall = () => undefined;
     let unlistenVanillaInstall = () => undefined;
+    let unlistenReduxInstall = () => undefined;
     let removeThemePreferenceListener = () => undefined;
 
     applyThemeMode(readStoredThemeMode() ?? detectPreferredThemeMode());
@@ -944,8 +1113,19 @@
       unlistenVanillaInstall = await onVanillaInstallStatus((event) => {
         void handleVanillaStatus(event);
       });
+      unlistenReduxInstall = await onReduxInstallStatus((event) => {
+        void handleReduxStatus(event);
+      });
 
       try {
+        try {
+          systemMemoryProfile = await getSystemMemoryProfile();
+          manualLaunchMemoryMb = clampLaunchMemoryMb(manualLaunchMemoryMb);
+          storeLaunchMemoryMb(manualLaunchMemoryMb);
+        } catch (error) {
+          await appendLog("system", getErrorMessage(error, t("errLoadMemoryProfile")));
+        }
+
         await refreshDependencies();
         await hydrateMinecraftDir();
         offlineUsername = loadOfflineUsername() ?? DEFAULT_OFFLINE_USERNAME;
@@ -958,9 +1138,10 @@
         await appendLog("system", errorMessage);
       }
 
-      const [optifineResult, vanillaResult] = await Promise.allSettled([
+      const [optifineResult, vanillaResult, reduxResult] = await Promise.allSettled([
         listOptifineInstallOptions(),
-        listVanillaReleases()
+        listVanillaReleases(),
+        listReduxInstallOptions()
       ]);
 
       if (optifineResult.status === "fulfilled") {
@@ -980,6 +1161,12 @@
           getErrorMessage(vanillaResult.reason, t("errLoadVanillaCatalog"))
         );
       }
+
+      if (reduxResult.status === "fulfilled") {
+        reduxOptions = reduxResult.value;
+      } else {
+        await appendLog("system", getErrorMessage(reduxResult.reason, t("errLoadReduxCatalog")));
+      }
     })();
 
     return () => {
@@ -987,6 +1174,7 @@
       unlistenLog();
       unlistenOptifineInstall();
       unlistenVanillaInstall();
+      unlistenReduxInstall();
       removeThemePreferenceListener();
     };
   });
@@ -1069,6 +1257,15 @@
   <symbol id="icon-star" viewBox="0 0 24 24">
     <path d="m12 3 2.7 5.8 6.3.6-4.8 4.1 1.4 6.2L12 16.9 6.4 19.7l1.4-6.2L3 9.4l6.3-.6z" />
   </symbol>
+  <symbol id="icon-memory" viewBox="0 0 24 24">
+    <rect x="5" y="7" width="14" height="10" rx="2" />
+    <path d="M9 7V5" />
+    <path d="M15 7V5" />
+    <path d="M9 19v-2" />
+    <path d="M15 19v-2" />
+    <path d="M8.5 11.5h7" />
+    <path d="M8.5 14.5h4" />
+  </symbol>
 </svg>
 
 <div class="app-shell">
@@ -1097,7 +1294,12 @@
     </button>
 
     <div
-      class:active={isLaunching || installingOptifineOptionId || installingVanillaVersionId}
+      class:active={
+        isLaunching ||
+        installingOptifineOptionId ||
+        installingVanillaVersionId ||
+        installingReduxVersionId
+      }
       class="status-indicator"
       role="status"
       aria-live="polite"
@@ -1131,68 +1333,95 @@
     />
 
     <aside class="control-panel" aria-label={t("controlsAria")}>
-      <DependencyBanner
-        {showDependencyWarnings}
-        {needsJavaAttention}
-        {needsGraphicsAttention}
-        {needsSelectedVersionJavaAttention}
-        {javaStatus}
-        {graphicsStatus}
-        {selectedSystemJavaMajorRequirement}
-        {isInstallingJava}
-        {isInstallingGraphicsDependency}
-        {t}
-        {fillTemplate}
-        onAutoInstallJava={handleAutoInstallJava}
-        onAutoInstallGraphicsDependency={handleAutoInstallGraphicsDependency}
-      />
+      <div class="control-panel-scroll">
+        <DependencyBanner
+          {showDependencyWarnings}
+          {needsJavaAttention}
+          {needsGraphicsAttention}
+          {needsSelectedVersionJavaAttention}
+          {javaStatus}
+          {graphicsStatus}
+          {selectedSystemJavaMajorRequirement}
+          {isInstallingJava}
+          {isInstallingGraphicsDependency}
+          {t}
+          {fillTemplate}
+          onAutoInstallJava={handleAutoInstallJava}
+          onAutoInstallGraphicsDependency={handleAutoInstallGraphicsDependency}
+        />
 
-      <OfflineProfilePanel
-        {offlineUsername}
-        {t}
-        onUsernameInput={handleUsernameChange}
-        onSkinChange={handleLocalSkinFile}
-      />
+        <OfflineProfilePanel
+          {offlineUsername}
+          {t}
+          onUsernameInput={handleUsernameChange}
+          onSkinChange={handleLocalSkinFile}
+        />
 
-      <MinecraftDirectoryPanel
-        {minecraftDir}
-        {detectedMinecraftDir}
-        {errorMessage}
-        {statusMessage}
-        {missingVersionsDirPath}
-        {isLoadingVersions}
-        {isEnsuringVersionsDir}
-        {t}
-        onMinecraftDirInput={(path) => {
-          minecraftDir = path;
-        }}
-        onBrowse={handleBrowse}
-        onReload={refreshVersions}
-        onCreateVersionsDir={handleCreateVersionsDir}
-      />
+        <MemorySettingsPanel
+          memoryProfile={systemMemoryProfile}
+          memoryMode={launchMemoryMode}
+          manualMemoryMb={manualLaunchMemoryMb}
+          {t}
+          onSetMemoryMode={setLaunchMemoryMode}
+          onSetManualMemoryMb={setManualLaunchMemoryMb}
+        />
 
-      <VersionCatalogPanel
-        {versionFilter}
-        {filteredCatalogItems}
-        {selectedVersionId}
-        {isLaunching}
-        {installingOptifineOptionId}
-        {installingVanillaVersionId}
-        {canPlay}
-        {installProgress}
-        {vanillaInstallProgress}
-        {installPercent}
-        {t}
-        {isFavorite}
-        onSetVersionFilter={setVersionFilter}
-        onSelectCatalogItem={selectCatalogItem}
-        onToggleFavorite={toggleFavorite}
-        onDownload={handleDownload}
-        onDelete={handleDelete}
-        onPlay={handlePlay}
-      />
+        <MinecraftDirectoryPanel
+          {minecraftDir}
+          {detectedMinecraftDir}
+          {errorMessage}
+          {statusMessage}
+          {missingVersionsDirPath}
+          {isLoadingVersions}
+          {isEnsuringVersionsDir}
+          {t}
+          onMinecraftDirInput={(path) => {
+            minecraftDir = path;
+          }}
+          onBrowse={handleBrowse}
+          onReload={refreshVersions}
+          onCreateVersionsDir={handleCreateVersionsDir}
+        />
 
-      <LanguagePanel {locale} {t} onSetLocale={setLocale} />
+        <VersionCatalogPanel
+          {versionFilter}
+          {filteredCatalogItems}
+          {selectedVersionId}
+          {isLaunching}
+          {installingOptifineOptionId}
+          {installingVanillaVersionId}
+          {installingReduxVersionId}
+          {installProgress}
+          {vanillaInstallProgress}
+          {reduxInstallProgress}
+          {installPercent}
+          {t}
+          {isFavorite}
+          onSetVersionFilter={setVersionFilter}
+          onSelectCatalogItem={selectCatalogItem}
+          onToggleFavorite={toggleFavorite}
+          onDownload={handleDownload}
+          onDelete={handleDelete}
+        />
+
+        <LanguagePanel {locale} {t} onSetLocale={setLocale} />
+      </div>
+
+      <div class="control-panel-footer">
+        <button
+          class:active={canPlay}
+          class="btn primary play-button control-panel-play"
+          type="button"
+          on:click={handlePlay}
+          disabled={!canPlay}
+        >
+          <svg class="app-icon" aria-hidden="true"><use href="#icon-play" /></svg>
+          {playButtonLabel}
+        </button>
+        {#if playBlockedMessage}
+          <p class="play-blocked-note" role="status">{playBlockedMessage}</p>
+        {/if}
+      </div>
     </aside>
   </div>
 </div>

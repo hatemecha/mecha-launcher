@@ -2,6 +2,7 @@ import { fillTemplate, translate, type Locale } from "./i18n";
 import type {
   LauncherStatusEvent,
   OptifineInstallStatusEvent,
+  ReduxInstallStatusEvent,
   VanillaInstallStatusEvent
 } from "./types";
 
@@ -97,6 +98,49 @@ export function formatVanillaInstallMessage(
       )}`;
     case "runtime":
       return `${translate(locale, "installStageRuntime")}${formatProgress(
+        event.current,
+        event.total
+      )}`;
+    case "done":
+      return fillTemplate(translate(locale, "installStageDone"), {
+        id: event.versionId
+      });
+    default:
+      return event.message;
+  }
+}
+
+export function formatReduxInstallMessage(
+  locale: Locale,
+  event: ReduxInstallStatusEvent
+): string {
+  switch (event.stage) {
+    case "prepare":
+      return translate(locale, "installStagePrepare");
+    case "minecraft":
+      return `${translate(locale, "installStageMinecraft")}${formatProgress(
+        event.current,
+        event.total
+      )}`;
+    case "libraries":
+      return `${translate(locale, "installStageLibraries")}${formatProgress(
+        event.current,
+        event.total
+      )}`;
+    case "assets":
+      return `${translate(locale, "installStageAssets")}${formatProgress(
+        event.current,
+        event.total
+      )}`;
+    case "runtime":
+      return `${translate(locale, "installStageRuntime")}${formatProgress(
+        event.current,
+        event.total
+      )}`;
+    case "fabric":
+      return translate(locale, "installStageFabric");
+    case "mods":
+      return `${translate(locale, "installStageMods")}${formatProgress(
         event.current,
         event.total
       )}`;
